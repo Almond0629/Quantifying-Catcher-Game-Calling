@@ -1,0 +1,35 @@
+# Large data files (regenerate with `python3.12 -m gamecalling.phase0`)
+statcast_all_pitches_2024_2025.csv
+*.csv.gz
+data/
+*.parquet
+
+# Large prototype output
+at_bat_graph.png
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# Editors and OS
+.DS_Store
+.vscode/
+.idea/
+
+# Local tooling and working notes
+.claude/
+.codex/
+CLAUDE.md
+AGENTS.md
+/Sessions/
+/project_plan.md
+/research_notes/

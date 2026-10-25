@@ -1,0 +1,9 @@
+# Python 3.12 (run with python3.12; plain python3 on this machine lacks pandas)
+numpy==1.26.4
+pandas==2.2.3
+pyarrow==19.0.0
+scipy==1.15.1
+statsmodels==0.14.5
+networkx==3.4.2
+matplotlib==3.10.0
+pytest==8.4.0

@@ -1,0 +1,12 @@
+exclusion_reason,2024,2025,all
+scorable,679303,679166,1358469
+position_player_pitching,1347,2187,3534
+pitchout,54,54,108
+intentional_walk,509,555,1064
+automatic_call,1878,1882,3760
+missing_pitch_type,287,173,460
+not_an_action,18,15,33
+sequence_error,7,7,14
+below_support,10348,11561,21909
+pitcher_missing_from_role_fold,18147,16297,34444
+all,711898,711897,1423795
