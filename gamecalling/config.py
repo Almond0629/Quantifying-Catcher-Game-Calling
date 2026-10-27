@@ -52,6 +52,14 @@ SP_MIN_START_SHARE = 0.5
 N_FOLDS = 3
 FOLD_SEED = 20261024
 
+# Ball-in-play payoff cells (final base-out x contact bin) with fewer PAs than
+# this in a role's fold use the fallback in payoff.shift_fallback (same fold).
+# 1 = only empty cells (user decision, 2026-10-27); 6-11 of 192 per season-fold are empty.
+MIN_CONTACT_CELL_N = 1
+
+# Count-graph solver: repeat passes until no value changes by more than this (runs).
+SOLVER_TOL = 1e-9
+
 # Marlins called pitches from the dugout for their final nine games of 2025,
 # starting Sept 19, 2025 at Texas (MLB.com). Flagged, not excluded.
 DUGOUT_CALLED_TEAM = "MIA"

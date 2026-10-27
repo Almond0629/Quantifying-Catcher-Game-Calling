@@ -272,7 +272,7 @@ def build_plate_appearances(pitches: pd.DataFrame) -> pd.DataFrame:
     pa = first[[
         "season", "game_pk", "game_date", "inning", "inning_topbot", "at_bat_number",
         "fielding_team", "batting_team", "batter", "stand",
-    ]].copy()
+    ] + (["fold"] if "fold" in pitches else [])].copy()
     for col in ("pitcher", "catcher", "bases", "outs", "base_out", "bat_score"):
         pa[f"start_{col}"] = first[col]
     for col in ("pitcher", "catcher", "bases", "outs", "base_out", "balls", "strikes",
