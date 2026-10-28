@@ -13,7 +13,7 @@ must have pitched in both training folds. The scoring fold is never used.
 import numpy as np
 import pandas as pd
 
-from gamecalling import config
+from gamecalling import config, weighting
 
 SUPPORT_KEY = ["season", "pitcher", "stand", "action", "scoring_fold"]
 
@@ -40,10 +40,12 @@ def pitcher_roles(pitches: pd.DataFrame) -> pd.DataFrame:
     A start is an appearance where the pitcher threw his team's first pitch of the game.
     """
     starters = pitches.groupby(["game_pk", "fielding_team"]).head(1)[["game_pk", "pitcher"]]
-    apps = pitches[["season", "fold", "game_pk", "pitcher"]].drop_duplicates()
+    apps = pitches[["season", "fold", "game_pk", "pitcher"]].assign(w=weighting.w(pitches)).drop_duplicates(
+        ["season", "fold", "game_pk", "pitcher"])
     apps = apps.merge(starters.assign(start=True), on=["game_pk", "pitcher"], how="left")
+    apps["start_w"] = np.where(apps["start"].eq(True), apps["w"], 0.0)
     return apps.groupby(["season", "pitcher", "fold"]).agg(
-        games=("game_pk", "size"), starts=("start", "count")).reset_index()
+        games=("w", "sum"), starts=("start_w", "sum")).reset_index()
 
 
 def training_roles(
@@ -81,7 +83,8 @@ def support_table(
     if roles is None:
         roles = pitcher_roles(pitches)
     usable = pitches[pitches["thrown"] & pitches["action"].notna()]
-    counts = usable.groupby(["season", "pitcher", "fold", "stand", "action"]).size().rename("n").reset_index()
+    usable = usable.assign(_w=weighting.w(usable))
+    counts = usable.groupby(["season", "pitcher", "fold", "stand", "action"])["_w"].sum().rename("n").reset_index()
     rows = []
     for k in range(n_folds):
         train = counts[counts["fold"].isin(fold_roles(k, n_folds))]

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from gamecalling import config
+from gamecalling import config, weighting
 
 N_BASE_OUT = 24
 CONTACT_BINS = tuple(range(1, 9))  # launch_speed_angle 1-6, bunt (7), untracked (8)
@@ -44,7 +44,9 @@ def base_out_index(bases, outs):
 def re24_table(pas: pd.DataFrame) -> np.ndarray:
     """Mean runs from the PA start to the end of the half-inning, by start base-out state."""
     use = pas[pas["re24_eligible"]]
-    table = use.groupby("start_base_out")["runs_rest_of_inning"].mean().reindex(range(N_BASE_OUT))
+    w = pd.Series(weighting.w(use), index=use.index)
+    num = (use["runs_rest_of_inning"] * w).groupby(use["start_base_out"]).sum()
+    table = (num / w.groupby(use["start_base_out"]).sum()).reindex(range(N_BASE_OUT))
     if table.isna().any():
         raise ValueError(f"RE24 states with no PAs: {table.index[table.isna()].tolist()}")
     return table.to_numpy(dtype="float64")
@@ -88,11 +90,17 @@ def contact_table(pas: pd.DataFrame, re24: np.ndarray) -> tuple[np.ndarray, np.n
     )
     value = use["runs_on_final_pitch"].to_numpy() + after
     df = pd.DataFrame({"bo": use["final_base_out"].to_numpy(), "bin": use["final_contact_bin"].astype(int).to_numpy(),
-                       "value": value})
+                       "value": value, "w": weighting.w(use)})
     grid = pd.MultiIndex.from_product([range(N_BASE_OUT), CONTACT_BINS])
-    g = df.groupby(["bo", "bin"])["value"].agg(["mean", "size"]).reindex(grid)
+    g = _wmean_size(df, ["bo", "bin"], "value").reindex(grid)
     shape = (N_BASE_OUT, len(CONTACT_BINS))
     return g["mean"].to_numpy().reshape(shape), g["size"].fillna(0).to_numpy(dtype=int).reshape(shape)
+
+
+def _wmean_size(df: pd.DataFrame, keys, col: str) -> pd.DataFrame:
+    """Weighted mean of `col` and total weight ("size") by keys; df has a `w` column."""
+    g = df.assign(_wx=df[col] * df["w"]).groupby(keys)[["_wx", "w"]].sum()
+    return pd.DataFrame({"mean": g["_wx"] / g["w"], "size": g["w"]})
 
 
 def shift_fallback(mean: np.ndarray, n: np.ndarray, re24: np.ndarray, min_n: int) -> tuple[np.ndarray, np.ndarray]:
@@ -126,19 +134,19 @@ def re288_table(pitches: pd.DataFrame, pas: pd.DataFrame, re24: np.ndarray,
     use = pitches["thrown"] & ~pitches["pa_sequence_error"] & ok
     df = pd.DataFrame({"bo": pitches.loc[use, "base_out"].astype(int),
                        "c": (pitches.loc[use, "balls"] * 3 + pitches.loc[use, "strikes"]).astype(int),
-                       "runs": (end - pitches["bat_score"])[use]})
+                       "runs": (end - pitches["bat_score"])[use], "w": weighting.w(pitches[use])})
     grid = pd.MultiIndex.from_product([range(N_BASE_OUT), range(12)])
-    g = df.groupby(["bo", "c"])["runs"].agg(["mean", "size"]).reindex(grid)
+    g = _wmean_size(df, ["bo", "c"], "runs").reindex(grid)
     mean = g["mean"].to_numpy().reshape(N_BASE_OUT, 12)
     n = g["size"].fillna(0).to_numpy(dtype=int).reshape(N_BASE_OUT, 12)
     filled, fallback = shift_fallback(mean, n, re24, min_n)
     return filled, n, fallback
 
 
-def role_payoffs(pas: pd.DataFrame, season: int, fold: int,
+def role_payoffs(pas: pd.DataFrame, season: int, fold: int | None,
                  min_contact_n: int = config.MIN_CONTACT_CELL_N) -> Payoffs:
-    """Payoffs from one season's fold. `pas` needs the `fold` column."""
-    own = pas[(pas["season"] == season) & (pas["fold"] == fold)]
+    """Payoffs from one season's fold (all folds if fold is None). `pas` needs the `fold` column."""
+    own = pas[(pas["season"] == season) & ((pas["fold"] == fold) if fold is not None else True)]
     re24 = re24_table(own)
     mean, n = contact_table(own, re24)
     contact, fallback = shift_fallback(mean, n, re24, min_contact_n)

@@ -71,7 +71,7 @@ def score_fold(pitches: pd.DataFrame, season: int, k: int, sel: RoleSolution, va
     bo = p["base_out"].to_numpy(int)
     c = (p["balls"] * 3 + p["strikes"]).to_numpy(int)
     rows = np.arange(len(p))
-    out = p[SCORE_COLUMNS].copy()
+    out = p[SCORE_COLUMNS + [c for c in ("w", "w_hyper") if c in p]].copy()
 
     def scored(Q_sel, Q_val):
         qs, qv = _pick(Q_sel, u, bo, c), _pick(Q_val, u, bo, c)
@@ -103,14 +103,14 @@ class PilotRun:
 
 
 def run_pilot(pitches: pd.DataFrame, pas: pd.DataFrame, support: pd.DataFrame, seasons=config.SEASONS,
-              keep_solutions=False) -> PilotRun:
+              keep_solutions=False, with_re288=True) -> PilotRun:
     import time
     timings = {"fit_role": [], "solve_role": [], "score_fold": []}
     roles = {}
     for season in seasons:
         for f in range(config.N_FOLDS):
             t = time.perf_counter()
-            roles[season, f] = models.fit_role(pitches, pas, season, f)
+            roles[season, f] = models.fit_role(pitches, pas, season, f, with_re288)
             timings["fit_role"].append(time.perf_counter() - t)
     eligible = arsenal.eligible_sets(support)
     scores, solutions = [], {}

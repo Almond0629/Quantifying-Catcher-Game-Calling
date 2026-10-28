@@ -15,7 +15,7 @@ SCORES_PARQUET = config.DATA_DIR / "phase1_scores.parquet"
 REPORT = config.REPORTS_DIR / "phase1_pilot.md"
 
 
-ID_COLUMNS = {"season", "fold", "scoring_fold", "pitcher", "base_out", "outs", "bases"}
+ID_COLUMNS = {"season", "fold", "scoring_fold", "pitcher", "catcher", "base_out", "outs", "bases"}
 
 
 def _md(df: pd.DataFrame, floatfmt="{:.4f}") -> str:
