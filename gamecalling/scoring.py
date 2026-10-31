@@ -35,10 +35,10 @@ class RoleSolution:
     bip_value: np.ndarray  # (U, 24, 1, A)
 
 
-def solve_role(role: models.Role, units: models.Units) -> RoleSolution:
+def solve_role(role: models.Role, units: models.Units, fit_policy=models.fit_policy) -> RoleSolution:
     p = models.unit_outcome_probs(role.outcome, units)
     pc = models.unit_contact_probs(role.contact, units)
-    policy = models.fit_policy(role.policy_train, units)
+    policy = fit_policy(role.policy_train, units)
     pay = role.payoffs
     bip = np.einsum("uak,bk->uba", pc, pay.contact)[:, :, None, :]
     elig = units.eligible[:, None, None, :]
@@ -95,6 +95,25 @@ def score_fold(pitches: pd.DataFrame, season: int, k: int, sel: RoleSolution, va
 
 
 @dataclass
+class PipelineRun:
+    """What a pipeline (research.Spec.pipeline) returns.
+
+    roles: (season, fold) -> fitted role; models keep predict and the model_alphas interface. action_values: references
+    to per-action files (path, model, run label, season, scoring fold, rows, sha256), not the values. fit_ids: the
+    fitted-run identifiers, whose run label is the one in the artifact paths. solutions: only the P0 wrapper's, if kept.
+    """
+    scores: pd.DataFrame
+    roles: dict
+    policy_alphas: list
+    action_values: list
+    solve_log: list
+    abnormal_log: list
+    fit_ids: dict
+    timings: dict
+    solutions: dict | None = None
+
+
+@dataclass
 class PilotRun:
     scores: pd.DataFrame
     roles: dict          # (season, fold) -> models.Role
@@ -103,14 +122,17 @@ class PilotRun:
 
 
 def run_pilot(pitches: pd.DataFrame, pas: pd.DataFrame, support: pd.DataFrame, seasons=config.SEASONS,
-              keep_solutions=False, with_re288=True) -> PilotRun:
+              keep_solutions=False, with_re288=True, fit_role=models.fit_role,
+              fit_policy=models.fit_policy, solve_role=solve_role) -> PilotRun:
+    """`fit_role`, `fit_policy` and `solve_role` are hooks for the research program's model versions
+    (research.py); the defaults are the pilot P0."""
     import time
     timings = {"fit_role": [], "solve_role": [], "score_fold": []}
     roles = {}
     for season in seasons:
         for f in range(config.N_FOLDS):
             t = time.perf_counter()
-            roles[season, f] = models.fit_role(pitches, pas, season, f, with_re288)
+            roles[season, f] = fit_role(pitches, pas, season, f, with_re288)
             timings["fit_role"].append(time.perf_counter() - t)
     eligible = arsenal.eligible_sets(support)
     scores, solutions = [], {}
@@ -119,8 +141,8 @@ def run_pilot(pitches: pd.DataFrame, pas: pd.DataFrame, support: pd.DataFrame, s
             units = models.build_units(eligible[(eligible["season"] == season) & (eligible["scoring_fold"] == k)])
             sel_fold, val_fold = arsenal.fold_roles(k)
             t = time.perf_counter()
-            sel = solve_role(roles[season, sel_fold], units)
-            val = solve_role(roles[season, val_fold], units)
+            sel = solve_role(roles[season, sel_fold], units, fit_policy)
+            val = solve_role(roles[season, val_fold], units, fit_policy)
             timings["solve_role"] += [(time.perf_counter() - t) / 2] * 2
             t = time.perf_counter()
             scores.append(score_fold(pitches, season, k, sel, val, units))

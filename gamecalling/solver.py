@@ -77,11 +77,14 @@ def _check(p_outcome, eligible):
         raise ValueError("negative outcome probability")
 
 
-def _iterate(step, shape, tol, max_iter):
+def _iterate(step, shape, tol, max_iter, stats=None):
     V = np.zeros(shape)
-    for _ in range(max_iter):
+    for i in range(max_iter):
         V_new, Q = step(V)
         if np.max(np.abs(V_new - V), initial=0.0) < tol:
+            if stats is not None:
+                stats["iterations"] = stats.get("iterations", 0) + i + 1
+                stats["max_iterations"] = max(stats.get("max_iterations", 0), i + 1)
             return V_new, Q
         V = V_new
     raise RuntimeError(f"solver did not converge to {tol} in {max_iter} passes")
@@ -93,7 +96,7 @@ def _value_shape(p_outcome, bip_value, walk_value, mask):
 
 
 def evaluate(p_outcome, bip_value, walk_value, strikeout_value, policy, eligible=None,
-             tol=config.SOLVER_TOL, max_iter=10_000):
+             tol=config.SOLVER_TOL, max_iter=10_000, stats=None):
     """Reference-policy evaluation. Returns V (..., 12) and Q (..., 12, A).
 
     policy (..., 12, A) is a probability over actions in each count. `eligible`
@@ -115,11 +118,11 @@ def evaluate(p_outcome, bip_value, walk_value, strikeout_value, policy, eligible
         Q = action_values(V, p_outcome, bip_value, walk_value, strikeout_value)
         return (policy * Q).sum(axis=-1), np.where(eligible, Q, np.inf)
 
-    return _iterate(step, _value_shape(p_outcome, bip_value, walk_value, eligible), tol, max_iter)
+    return _iterate(step, _value_shape(p_outcome, bip_value, walk_value, eligible), tol, max_iter, stats)
 
 
 def optimize(p_outcome, bip_value, walk_value, strikeout_value, eligible,
-             tol=config.SOLVER_TOL, max_iter=10_000):
+             tol=config.SOLVER_TOL, max_iter=10_000, stats=None):
     """Optimal continuation: V(c) = min over eligible a of Q(c, a). Returns V and Q.
 
     Q of an ineligible action is +inf.
@@ -133,4 +136,4 @@ def optimize(p_outcome, bip_value, walk_value, strikeout_value, eligible,
         Q = np.where(eligible, action_values(V, p_outcome, bip_value, walk_value, strikeout_value), np.inf)
         return Q.min(axis=-1), Q
 
-    return _iterate(step, _value_shape(p_outcome, bip_value, walk_value, eligible), tol, max_iter)
+    return _iterate(step, _value_shape(p_outcome, bip_value, walk_value, eligible), tol, max_iter, stats)

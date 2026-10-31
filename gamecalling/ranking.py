@@ -66,12 +66,19 @@ class Design:
     levels: dict = field(default_factory=dict)  # block name -> level labels
 
 
+def _reference_first(codes: np.ndarray) -> np.ndarray:
+    """If level 0 (the dropped reference) is absent, as in a runners-on-only sample, the first present level
+    takes its place, so the intercept stays identified. Unchanged whenever level 0 is present."""
+    ref = codes.min()
+    return codes if ref == 0 else np.where(codes == ref, 0, codes)
+
+
 def build_design(df: pd.DataFrame, y: np.ndarray, pitcher_fixed: bool, weights=None) -> Design:
     """Weighted cross-products for score y on [intercept, count, base-out (, pitcher) | catcher (, pitcher)]."""
     n = len(df)
     wts = weighting.w(df) if weights is None else np.asarray(weights, float)
-    cidx = (df["balls"].to_numpy(int) * 3 + df["strikes"].to_numpy(int))
-    bo = df["base_out"].to_numpy(int)
+    cidx = _reference_first(df["balls"].to_numpy(int) * 3 + df["strikes"].to_numpy(int))
+    bo = _reference_first(df["base_out"].to_numpy(int))
     cat_codes, cat_levels = pd.factorize(df["catcher"], sort=True)
     pit_codes, pit_levels = pd.factorize(df["pitcher"], sort=True)
     blocks = [sp.csr_matrix(np.ones((n, 1))), _onehot(cidx, 12, True), _onehot(bo, 24, True)]
