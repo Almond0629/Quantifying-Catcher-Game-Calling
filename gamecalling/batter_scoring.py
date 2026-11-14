@@ -67,8 +67,28 @@ def _hash_model(h, model) -> None:
         for a in (model.theta, f.mean, f.sd, f.totals):
             h.update(np.asarray(a, float).tobytes())
         model = model.p0
+    if hasattr(model, "cell_r_n"):   # C1's runner offset (S8 §4); earlier versions never reach this, so their ids hold
+        _hash_runner_offset(h, model)
+        return
     h.update(np.array([model.alpha_league, model.alpha_cell]).tobytes())
     h.update(model.cell_n.to_numpy().tobytes())
+
+
+def _hash_table(h, table: pd.DataFrame) -> None:
+    """Values, keys and their names, and the category (column) order."""
+    h.update(repr((list(table.index.names), [str(c) for c in table.columns])).encode())
+    h.update(pd.util.hash_pandas_object(table.reset_index(), index=False).to_numpy().tobytes())
+
+
+def _hash_runner_offset(h, model) -> None:
+    """The complete runner model: its concentrations and runner tables, and the whole P0 parent (levels, base
+    probabilities, league and cell counts with their keys, concentrations)."""
+    p0 = model.p0
+    h.update(b"runner offset")
+    h.update(np.array([model.alpha_league_r, model.alpha_r, p0.alpha_league, p0.alpha_cell]).tobytes())
+    h.update(repr(p0.levels).encode())
+    for table in (model.league_r_n, model.cell_r_n, p0.base, p0.league_n, p0.cell_n):
+        _hash_table(h, table)
 
 
 def make_fit_id(model_id: str, run_label: str, season: int, fold: int, role) -> str:
@@ -111,13 +131,34 @@ def identity_table(p: pd.DataFrame, units: models.Units) -> tuple[pd.DataFrame, 
 
 # --- Solves ---
 
+def uses_runners(model) -> bool:
+    """A contact model whose offset is a runner model (C1, S8): its probabilities depend on runners_on."""
+    return bool(getattr(getattr(model, "p0", None), "by_runners", False))
+
+
+def runner_slice(b: np.ndarray) -> np.ndarray:
+    """runners_on for base-out states b = bases * 3 + outs: 0 with the bases empty (b < 3), else 1."""
+    return (np.asarray(b) >= 3).astype(int)
+
+
+def contact_for(pc: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Each identity's contact probabilities: (N, A, 8) as they are, or the base-out state's slice of (N, 2, A, 8)."""
+    return pc[np.arange(len(pc)), runner_slice(b)] if pc.ndim == 4 else pc
+
+
 def context_probabilities(role, ctx: pd.DataFrame, units: models.Units, A: int) -> tuple[np.ndarray, np.ndarray]:
-    """Outcome (N, 12, A, 6) and contact (N, A, 8) probabilities of contexts (u, batter) with arsenal size A."""
+    """Outcome (N, 12, A, 6) and contact (N, A, 8) probabilities of contexts (u, batter) with arsenal size A. A runner
+    contact model (C1) gives contact (N, 2, A, 8) by runners_on; contact_for picks each identity's slice."""
     N = len(ctx)
     slots = units.slots[units.slots["slot"] < A]
     base = ctx[["u", "batter"]].assign(pos=np.arange(N)).merge(slots, on="u")
-    pc = np.zeros((N, A, models.N_BINS))
-    pc[base["pos"], base["slot"]] = role.contact.predict(base)
+    if uses_runners(role.contact):
+        qr = base.merge(pd.DataFrame({"runners_on": [0, 1]}), how="cross")
+        pc = np.zeros((N, 2, A, models.N_BINS))
+        pc[qr["pos"], qr["runners_on"], qr["slot"]] = role.contact.predict(qr)
+    else:
+        pc = np.zeros((N, A, models.N_BINS))
+        pc[base["pos"], base["slot"]] = role.contact.predict(base)
     q = base.merge(pd.DataFrame({"cidx": np.arange(solver.N_COUNTS)}), how="cross")
     p = np.zeros((N, solver.N_COUNTS, A, models.N_OUTCOMES))
     p[q["pos"], q["cidx"], q["slot"]] = role.outcome.predict(q)
@@ -168,8 +209,8 @@ def solve_role_values(role, units: models.Units, policy: models.Policy, ids: pd.
         for start in range(0, len(group), chunk):
             sel = np.arange(start, min(start + chunk, len(group)))
             pos = ctx_of[sel]
-            values = solve_chunk(role, policy.probs[group_u[sel]][:, :, :int(A)], p_all[pos], pc_all[pos], group_b[sel],
-                                 stats)
+            values = solve_chunk(role, policy.probs[group_u[sel]][:, :, :int(A)], p_all[pos],
+                                 contact_for(pc_all[pos], group_b[sel]), group_b[sel], stats)
             batches += 1
             id_pos[:] = -1
             id_pos[group_ids[sel]] = np.arange(len(sel))
@@ -458,6 +499,7 @@ def simulate_identity(role, units, policy, ctx: pd.Series, b: int, seed: list, n
     A = int(units.eligible[u].sum())
     one = pd.DataFrame({"u": [u], "batter": [ctx["batter"]]})
     p, pc = context_probabilities(role, one, units, A)
+    pc = contact_for(pc, np.array([b]))
     pol = policy.probs[u][:, :A]
     v = solve_chunk(role, pol[None], p, pc, np.array([b]))["V_ref"][0, 0]
     sims = validation.simulate_pa(np.random.default_rng(seed), p[0], pc[0], role.payoffs.contact[b], pol,

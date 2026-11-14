@@ -22,6 +22,11 @@ M4 (S7; research_notes/research_program/S7_ground_ball.md, revision 1) keeps M3a
 ground-ball rate to M3a's contact model, main effects only: `bb_type` ground balls over the same tracked, non-bunt
 balls in play as xwOBAcon, beta-binomial shrinkage, standardized. `ground_ball=False` is M3a's existing path.
 
+C1's contact model (S8; research_notes/research_program/S8_combined_model.md, revision 1) is M4's regression with M1c's
+runner contact model (runners.py) as the offset instead of P0's (`runners=True`). Training rows' offsets leave out their
+own game's pitcher-cell and runner-cell counts, with the concentrations, league means and league runner level held at
+their full-E values; inner validation games are left out of all of them.
+
 Unit weights only: the weighted moment formulas are not specified (S6 §2). `batter=False` calls only P0's own
 functions. No policy, solver or scoring code here: those follow only an adoption.
 """
@@ -33,6 +38,7 @@ import pandas as pd
 from scipy.optimize import minimize
 
 from gamecalling import config, loader, models, pooling, weighting
+from gamecalling import runners as rn
 
 SEED = 20261030
 FORWARD_CODE = 3            # inner-fold seed code of the forward fit; role folds are 0-2
@@ -272,7 +278,10 @@ def fit_features(rows: pd.DataFrame, parents: "Features | None" = None, ground_b
 
 def logo_offset(model: models.PooledModel, frame: pd.DataFrame) -> np.ndarray:
     """P0 pitcher-cell posterior means with each row's own game removed; alpha_cell, the league means and the
-    base level stay at the model's (full-E) values. `frame` has the level keys, y and game_pk."""
+    base level stay at the model's (full-E) values. `frame` has the level keys, y and game_pk. A runner model (C1's
+    contact offset) goes through logo_runner_offset."""
+    if isinstance(model, rn.RunnerModel):
+        return logo_runner_offset(model, frame)
     keys = list(model.levels[2])
     K = model.cell_n.shape[1]
     n = models._lookup(model.cell_n, frame, keys)
@@ -280,11 +289,44 @@ def logo_offset(model: models.PooledModel, frame: pd.DataFrame) -> np.ndarray:
     return pooling.posterior_mean(n - n_game, model.league_mean(frame), model.alpha_cell)
 
 
-def training(kind: str, rows: pd.DataFrame) -> pd.DataFrame:
-    """Observations with batter and game_pk (research.Spec.training); P0's models ignore the extra columns."""
+def logo_runner_offset(model: rn.RunnerModel, frame: pd.DataFrame) -> np.ndarray:
+    """S8 §3.1: M1c's runner-cell posterior means with each row's own game removed from the pitcher cell and the runner
+    cell; alpha_cell, alpha_league_r, alpha_r, the league means L and the league runner level L_r stay at the model's
+    (full-E) values. `frame` has the level keys, runners_on, y and game_pk."""
+    p0, K = model.p0, model.p0.cell_n.shape[1]
+
+    def without_game(table, keys):
+        n = models._lookup(table, frame, keys)
+        return n - models._lookup(models._counts(frame, keys + ["game_pk"], K), frame, keys + ["game_pk"])
+
+    L = p0.league_mean(frame)
+    P = pooling.posterior_mean(without_game(p0.cell_n, list(p0.levels[2])), L, p0.alpha_cell)
+    Lr = pooling.posterior_mean(models._lookup(model.league_r_n, frame, model._keys(1)), L, model.alpha_league_r)
+    m = P * Lr / L
+    m = m / m.sum(-1, keepdims=True)
+    return pooling.posterior_mean(without_game(model.cell_r_n, model._keys(2)), m, model.alpha_r)
+
+
+def training(kind: str, rows: pd.DataFrame, runners: bool = False) -> pd.DataFrame:
+    """Observations with batter and game_pk (research.Spec.training); P0's models ignore the extra columns. `runners`
+    adds runners_on, which C1's contact offset needs."""
     frame = models.outcome_training(rows) if kind == "outcome" else models.contact_training(rows)
-    return frame.assign(batter=rows.loc[frame.index, "batter"].to_numpy(),
-                        game_pk=rows.loc[frame.index, "game_pk"].to_numpy())
+    frame = frame.assign(batter=rows.loc[frame.index, "batter"].to_numpy(),
+                         game_pk=rows.loc[frame.index, "game_pk"].to_numpy())
+    if runners:
+        frame = frame.assign(**{rn.RUNNER: rows.loc[frame.index, rn.RUNNER].astype(int).to_numpy()})
+    return frame
+
+
+def fit_offset(rows: pd.DataFrame, kind: str, runners: bool = False):
+    """The regression's offset model: P0's pooled model, or for C1's contact model M1c's runner model."""
+    if kind == "outcome":
+        if runners:
+            raise ValueError("no adopted outcome component uses the runner levels (S8 §2)")
+        return models.fit_outcome_model(rows)
+    if runners:
+        return rn.fit_runner_pooled(rn.contact_training(rows), models.CONTACT_LEVELS, models.N_BINS)
+    return models.fit_contact_model(rows)
 
 
 def design(z: np.ndarray, actions, variant: str) -> np.ndarray:
@@ -380,25 +422,25 @@ class Prepared:
     logp: np.ndarray    # leave-one-game-out
 
 
-def prepare(rows: pd.DataFrame, kind: str, ground_ball: bool = False) -> Prepared:
+def prepare(rows: pd.DataFrame, kind: str, ground_ball: bool = False, runners: bool = False) -> Prepared:
     """Everything estimated from the estimation set `rows`, with its training rows' leave-one-game-out design."""
     features = fit_features(rows, ground_ball=ground_ball)
-    p0 = models.fit_outcome_model(rows) if kind == "outcome" else models.fit_contact_model(rows)
-    frame = training(kind, rows)
+    p0 = fit_offset(rows, kind, runners)
+    frame = training(kind, rows, runners)
     return Prepared(features, p0, frame, features.z_logo(frame["batter"], frame["game_pk"]),
                     np.log(logo_offset(p0, frame)))
 
 
 def inner_fold(rows: pd.DataFrame, v_games, kind: str, variant: str, lambdas=LAMBDAS, tag: dict | None = None,
-               ground_ball: bool = False) -> dict:
+               ground_ball: bool = False, runners: bool = False) -> dict:
     """One inner fit: nothing from the validation games enters preprocessing or the coefficients."""
     log = []
     is_v = rows["game_pk"].isin(v_games).to_numpy()
-    prep = prepare(rows[~is_v], kind, ground_ball)
-    K = prep.p0.cell_n.shape[1]
+    prep = prepare(rows[~is_v], kind, ground_ball, runners)
+    K = prep.logp.shape[1]
     path = fit_path(design(prep.z, prep.frame["action"], variant), prep.logp, prep.frame["y"].to_numpy(), K, lambdas,
                     tag, log)
-    val = training(kind, rows[is_v])
+    val = training(kind, rows[is_v], runners)
     X = design(prep.features.z_full(val["batter"]), val["action"], variant)
     logp, y, C = np.log(prep.p0.predict(val)), val["y"].to_numpy(), helmert(K)
     losses = {}
@@ -441,7 +483,8 @@ class BatterModel:
         K = self.theta.shape[1] + 1
         names = FEATURES + ((GROUND_BALL,) if f.gb is not None else ())
         main = self.theta[:len(names)] @ helmert(K).T   # category shifts per feature SD, for the average family
-        out = {"league": self.p0.alpha_league, "cell": self.p0.alpha_cell, "lambda": self.lam,
+        out = {"league": self.p0.alpha_league, "cell": self.p0.alpha_cell,
+               **{a: getattr(self.p0, a) for a in ("alpha_league_r", "alpha_r") if hasattr(self.p0, a)}, "lambda": self.lam,
                "lambda_at_edge": self.lam in (max(LAMBDAS), min(LAMBDAS)), "n_train": self.n_train,
                "n_games": self.n_games, "code": self.code, "coef_norm": float(np.linalg.norm(self.theta)),
                "kappa_whiff": f.whiff.kappa, "kappa_chase": f.chase.kappa, "mu_whiff": f.whiff.mu,
@@ -460,30 +503,36 @@ class BatterModel:
 
 
 def fit_component(rows: pd.DataFrame, kind: str, variant: str, code: int, lambdas=LAMBDAS,
-                  ground_ball: bool = False) -> BatterModel:
+                  ground_ball: bool = False, runners: bool = False) -> BatterModel:
     season = int(rows["season"].iloc[0])
     folds = inner_folds(rows["game_pk"], season, code)
     tag = {"variant": variant, "component": kind, "season": season, "code": code}
-    results = [inner_fold(rows, folds.index[folds == v], kind, variant, lambdas, {**tag, "inner": v}, ground_ball)
-               for v in range(N_INNER)]
+    results = [inner_fold(rows, folds.index[folds == v], kind, variant, lambdas, {**tag, "inner": v}, ground_ball,
+                          runners) for v in range(N_INNER)]
     abnormal = [entry for r in results for entry in r["abnormal"]]
     lam, curve = select_lambda(results, lambdas)
-    prep = prepare(rows, kind, ground_ball)
-    K = prep.p0.cell_n.shape[1]
+    prep = prepare(rows, kind, ground_ball, runners)
+    K = prep.logp.shape[1]
     path = fit_path(design(prep.z, prep.frame["action"], variant), prep.logp, prep.frame["y"].to_numpy(), K,
                     [v for v in lambdas if v >= lam], {**tag, "inner": "final"}, abnormal)
     return BatterModel(variant, kind, prep.p0, prep.features, path[lam], lam, curve, len(prep.frame), len(folds), code,
                        abnormal)
 
 
-def fit_models(train: pd.DataFrame, variant: str = "M3a", batter: bool = True, ground_ball: bool = False):
+def fit_models(train: pd.DataFrame, variant: str = "M3a", batter: bool = True, ground_ball: bool = False,
+               runners: bool = False):
     """Outcome and contact models of one role, or of the forward fit. batter=False: P0's own functions only.
-    ground_ball=True is M4: M3a's outcome model, and M3a's contact model plus the fourth feature."""
+    ground_ball=True is M4: M3a's outcome model, and M3a's contact model plus the fourth feature. runners=True (with
+    ground_ball) is C1: M4's contact regression on M1c's runner contact model as the offset."""
     if not batter:
         return models.fit_outcome_model(train), models.fit_contact_model(train)
+    if runners and not ground_ball:
+        raise ValueError("the runner offset is defined only for C1's contact model, which has ground-ball rate (S8 §3)")
     code = role_code(train)
     _check_unit_weights(train)
     if ground_ball:
-        return (fit_component(train, "outcome", "M3a", code),
-                fit_component(train, "contact", "M4", code, ground_ball=True))
+        outcome = fit_component(train, "outcome", "M3a", code)
+        contact = (fit_component(train, "contact", "C1", code, ground_ball=True, runners=True) if runners
+                   else fit_component(train, "contact", "M4", code, ground_ball=True))
+        return outcome, contact
     return (fit_component(train, "outcome", variant, code), fit_component(train, "contact", variant, code))

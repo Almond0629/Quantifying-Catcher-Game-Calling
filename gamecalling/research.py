@@ -240,7 +240,7 @@ def run_model(spec: Spec, out_name: str | None = None, run_label: str = "full", 
                             "support_recomputed": spec.recompute_support},
                 "created": time.strftime("%Y-%m-%d %H:%M:%S"), "code": code_state(),
                 "inputs": input_state(spec.extra_inputs), "run_label": run_label,
-                "seconds": {"pipeline": t_pipeline, "total": time.perf_counter() - t0},
+                "seconds": {"pipeline": t_pipeline, "total": time.perf_counter() - t0}, "timings": run.timings,
                 "alphas": alphas, "policy_alphas": run.policy_alphas, "action_values": run.action_values,
                 "solve_log": run.solve_log, "abnormal_log": run.abnormal_log, "fit_ids": run.fit_ids}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1, default=str))
@@ -466,7 +466,7 @@ def _half_job(args) -> dict:
     return {"season": season, "half": half, "scores": run.scores, "seconds": time.perf_counter() - t0}
 
 
-def independent_halves(spec: Spec, workers: int = 8) -> dict:
+def independent_halves(spec: Spec, workers: int = 8, job=_half_job) -> dict:
     """The whole pipeline inside each frozen random half (validation v0 halves); {(season, half): scores}."""
     halves = vp._load("v0")["halves"]
     p = base_tables()[0]
@@ -477,7 +477,7 @@ def independent_halves(spec: Spec, workers: int = 8) -> dict:
             g = np.sort(halves.index[(halves == half).to_numpy() & halves.index.isin(games)])
             jobs.append((spec, season, half, g))
     with ProcessPoolExecutor(max_workers=max(1, min(workers, len(jobs)))) as ex:
-        return {(r["season"], r["half"]): r for r in ex.map(_half_job, jobs)}
+        return {(r["season"], r["half"]): r for r in ex.map(job, jobs)}
 
 
 # --- S0: P0 reproduction ---
