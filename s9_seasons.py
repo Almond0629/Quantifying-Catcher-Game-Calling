@@ -6,6 +6,12 @@ paths and the versioned dugout flag (data/flags/dugout_calling_v1.json). Nothing
 eligibility, scoring or ranking rule.
 
 Phase 1 (this revision): the stages that need no season authorization and read no 2023 or 2026 pitch row.
+Revision 7 (2026-11-22), after revision 6 (b400b28b..., commit b33c331) failed its first production control and gate:
+(1) protocol amendment 1, the one permitted dtype difference in C1/C2 (PERMITTED_DTYPE: support.n stored int64 vs
+float64 from the frozen package; values exact); (2) completeness mapping v2, a general rule revalidated on development
+data as §8.1 allows (kept(): any no-pitch call); (3) amendment 2, the diagnosed 2024 shortfall in 746731
+(EXPECTED_DEV_SHORTFALL), pinned to MLB's kept-event sequence and Statcast's descriptions. Both amendments were
+approved by the user on 2026-11-22. Review round 1 (Astra, Neon): duplicate atBatIndex rejected; cast round-trip guard.
 
     python3.12 s9_seasons.py selftest    # synthetic checks only; reads no project data, writes nothing
     python3.12 s9_seasons.py guard       # once: hash the protected inventory
@@ -114,16 +120,25 @@ P0_DEFAULTS = {"fit_ids": {}, "solve_log": [], "abnormal_log": [], "action_value
 ACTION_KEYS = KEYS + ["scoring_fold", "action"]
 
 # Completeness gate (§8.1)
-MAPPING_VERSION = 1
+MAPPING_VERSION = 2          # v1 (VB, VP, AC only) failed on development data, 2026-11-22: see kept()
 SCHEDULE_URL = "https://statsapi.mlb.com/api/v1/schedule?sportId=1&gameType=R&season={season}"
 PBP_URL = "https://statsapi.mlb.com/api/v1/game/{pk}/playByPlay"
 EXPECTED_COMPLETED = {2024: 2429, 2025: 2430}
 EXPECTED_ABSENT = {2025: {778563, 778564}}           # the Tokyo games missing from the development extract
+# Protocol amendment 2 (approved by the user 2026-11-22): a diagnosed shortfall in the frozen 2024 development extract.
+# 746731, PA 68 (bottom 8th): MLB's play-by-play has five pitches (F, B, F, *B ball in dirt, S); Statcast has four
+# rows (foul, ball, foul, swinging_strike), without the ball in dirt, and records the strikeout pitch at 1-2 where MLB
+# has 2-2. A data shortfall, not a mapping failure. The gate reports it as a confirmed missing pitch and lets
+# development validation pass only on exactly this defect: the key difference, MLB's kept-event codes in that PA, and
+# Statcast's descriptions there (Astra: a key difference alone could come from another omitted pitch).
+EXPECTED_DEV_SHORTFALL = {2024: {746731: {"missing": [[68, 5]], "extra": [], "pa": 68,
+                                          "mlb_kept_codes": ["F", "B", "F", "*B", "S"],
+                                          "statcast_descriptions": ["foul", "ball", "foul", "swinging_strike"]}}}
 CANCELLED_EXAMPLE = 746577
 BACKOFF = (2, 5, 15, 45)
 FETCH_THREADS = 6
 USER_AGENT = "research-client"
-AUTOMATIC_CALLS = frozenset({"VB", "VP", "AC"})      # no-pitch calls Statcast records as rows (mapping v1)
+AUTOMATIC_CALLS = frozenset({"VB", "VP", "AC"})      # mapping v1's list (history); v2 keeps any no-pitch call
 # Smoke only: the one-in-five subset changes per-batter PA counts, so the position-player flag (and only what follows
 # from it) may differ in a single-season build. Any other difference fails the smoke run.
 SMOKE_ALLOWED_COLS = frozenset({"position_player_pitching", "exclusion_reason", "outcome_fit_eligible",
@@ -137,6 +152,12 @@ RECORD_IDS = {"alphas": ("season", "fold"), "policy_alphas": ("season", "scoring
               "solve_log": ("season", "scoring_fold", "role"), "action_values": ("model", "season", "scoring_fold"),
               "abnormal_log": ("season", "component", "code", "inner", "lambda")}
 APPROVED_PREDECESSOR_SCRIPTS = frozenset()            # reviewed earlier revisions whose records a later one accepts
+# Protocol amendment 1 (approved by the user 2026-11-22, after the first production control failed at C1 on this): the stored
+# arsenal_support.parquet was written by Phase 0 on 2026-10-27 under ca9d25c, whose support_table counted rows with
+# .size() (int64). Commit 483d573 (2026-10-29) added unit weights (weighting.w, float), so the frozen package's
+# support_table sums floats and gives n as float64. All 36,385 rows' values are identical. (table, column, stored dtype,
+# new dtype); applied only in tables_compare (C1, C2), only to integral finite values, and nothing else is relaxed.
+PERMITTED_DTYPE = (("support", "n", "int64", "float64"),)
 EXPECTED_PREDECESSORS = {"guard": set(), "audit": {"guard"}, "control": {"guard", "audit"}}   # gate_v<n>: {"guard"}
 
 
@@ -535,15 +556,35 @@ def roundtrip(df: pd.DataFrame) -> pd.DataFrame:
     return pd.read_parquet(buf)
 
 
+def permitted_dtype(table: str, a: pd.DataFrame, b: pd.DataFrame) -> tuple:
+    """Protocol amendment 1 (§4 C1/C2; PERMITTED_DTYPE): the one listed dtype difference. Returns (frame to compare,
+    note). When the reference's column has the listed reference dtype and the new column the listed new dtype, the new
+    column is cast to the reference dtype only if every value is finite and integral; the cast frame is then compared
+    exactly like any other (every value, every other dtype). Anything else is returned unchanged and fails as before."""
+    for t, col, ref_dt, new_dt in PERMITTED_DTYPE:
+        if t != table or col not in a or col not in b or str(b[col].dtype) != ref_dt or str(a[col].dtype) != new_dt:
+            continue
+        x = a[col].to_numpy(float)
+        if not (np.isfinite(x).all() and (x == np.round(x)).all()) or \
+                not a[col].astype(ref_dt).astype(new_dt).equals(a[col]):     # Neon: no overflow on the cast
+            return a, f"{table}.{col}: {new_dt} values are not all finite integers; the permitted cast is not applied"
+        return a.assign(**{col: a[col].astype(ref_dt)}), (
+            f"{table}.{col}: permitted dtype difference ({new_dt} new, {ref_dt} stored; amendment 1); every value "
+            f"finite and integral, cast, then compared exactly")
+    return a, None
+
+
 def tables_compare(new: tuple, ref: tuple, label: str) -> list:
     """Legacy columns only (the reference's columns, in order), after a Parquet round trip of the new build;
-    dugout_level is checked separately."""
+    dugout_level is checked separately. The single permitted dtype difference (amendment 1) is applied first."""
     new = tuple(roundtrip(x) for x in new)
     rows = []
     for name, keys, a, b in (("pitches", KEYS, new[0], ref[0]), ("PAs", ["pa_id"], new[1], ref[1]),
                              ("support", arsenal.SUPPORT_KEY, new[2], ref[2])):
-        r = frames_compare(a[list(b.columns)].reset_index(drop=True), b.reset_index(drop=True), keys)
-        rows.append({"check": f"{label}: {name} (legacy columns, exact)", **r})
+        a = a[list(b.columns)].reset_index(drop=True)
+        a, note = permitted_dtype(name, a, b)
+        r = frames_compare(a, b.reset_index(drop=True), keys)
+        rows.append({"check": f"{label}: {name} (legacy columns, exact)", **r, **({"permitted": note} if note else {})})
     return rows
 
 
@@ -1605,14 +1646,19 @@ def valid_schedule(obj) -> bool:
 
 def valid_pbp(obj) -> bool:
     """Total: False on any malformed input, and on an empty play list (a completed game has plays). Every event field
-    the mapping consumes (isPitch, type, details.code, details.call.code, details.eventType) is checked for type."""
+    the mapping consumes (isPitch, type, details.code, details.call.code, details.eventType) is checked for type. A
+    repeated atBatIndex is malformed (Astra: it would merge two plays' events into one expected PA; none of the 4,859
+    development feeds has one)."""
     try:
         if not isinstance(obj, dict) or not isinstance(obj.get("allPlays"), list) or not obj["allPlays"]:
             return False
+        seen_ab = set()
         for p in obj["allPlays"]:
             ab = p.get("about", {}).get("atBatIndex") if isinstance(p, dict) and isinstance(p.get("about"), dict) else None
-            if not isinstance(ab, int) or isinstance(ab, bool) or ab < 0 or not isinstance(p.get("playEvents"), list):
+            if not isinstance(ab, int) or isinstance(ab, bool) or ab < 0 or not isinstance(p.get("playEvents"), list) \
+                    or ab in seen_ab:
                 return False
+            seen_ab.add(ab)
             for e in p["playEvents"]:
                 if not isinstance(e, dict) or not isinstance(e.get("type"), str):
                     return False
@@ -1691,12 +1737,15 @@ def call_code(e: dict):
 
 
 def kept(e: dict) -> bool:
-    """Mapping v1: an MLB play event is a Statcast row if it is a pitch, or a no-pitch event whose call is one of the
-    listed automatic calls (AUTOMATIC_CALLS: intentional ball VB, violations VP and AC). Any other no-pitch call is not
-    kept and is flagged as unrecognized."""
+    """Mapping v2 (general rule): an MLB play event is a Statcast row if it is a pitch, or a no-pitch event that carries
+    a call code (MLB's automatic ball and strike calls). v1 kept only VB, VP and AC and failed on development data: 28
+    games had a Statcast automatic_ball or automatic_strike row at an AB, V, VC or VS call (all "Automatic Ball/Strike -
+    ..." in MLB's description). Under v2, 4,856 of 4,859 development games match key for key; the other three are the
+    two Tokyo games (absent) and 746731 (EXPECTED_DEV_SHORTFALL). A no-pitch event without a call (code N, 487 in
+    development) is not a row."""
     if e.get("isPitch"):
         return True
-    return e.get("type") == "no_pitch" and call_code(e) in AUTOMATIC_CALLS
+    return e.get("type") == "no_pitch" and call_code(e) is not None
 
 
 def event_signature(e: dict) -> tuple:
@@ -1707,8 +1756,33 @@ def event_signature(e: dict) -> tuple:
 
 
 def unrecognized(e: dict) -> bool:
-    """A no-pitch event carrying a call outside AUTOMATIC_CALLS (its row status is unknown under mapping v1)."""
-    return e.get("type") == "no_pitch" and call_code(e) is not None and call_code(e) not in AUTOMATIC_CALLS
+    """A no-pitch event v2 keeps whose MLB description is not an automatic ball or strike (its row status is unverified;
+    the gate fails on it for review)."""
+    if e.get("type") != "no_pitch" or call_code(e) is None:
+        return False
+    desc = (e.get("details") or {}).get("description")
+    return not (isinstance(desc, str) and desc.startswith(("Automatic Ball", "Automatic Strike")))
+
+
+def pa_evidence(pbp: dict, rows: pd.DataFrame, ab: int) -> tuple:
+    """(MLB's kept-event codes, Statcast's descriptions in pitch order) for one plate appearance."""
+    codes = [(e.get("details") or {}).get("code") for p in pbp.get("allPlays", []) if p["about"]["atBatIndex"] + 1 == ab
+             for e in p["playEvents"] if kept(e)]
+    descs = rows[rows["at_bat_number"] == ab].sort_values("pitch_number")["description"].tolist()
+    return codes, descs
+
+
+def expected_shortfall(season: int, game_pk: int, kc: dict, pbp=None, rows=None) -> bool:
+    """A development key mismatch equal to a listed, diagnosed shortfall (EXPECTED_DEV_SHORTFALL, amendment 2): the
+    exact key difference, and MLB's kept-event codes and Statcast's descriptions in the listed PA. Nothing else."""
+    want = EXPECTED_DEV_SHORTFALL.get(season, {}).get(game_pk)
+    if want is None or pbp is None or rows is None:
+        return False
+    if not (kc["n_missing"] == len(want["missing"]) and kc["n_extra"] == len(want["extra"]) and
+            [list(x) for x in kc["missing"]] == want["missing"] and [list(x) for x in kc["extra"]] == want["extra"]):
+        return False
+    codes, descs = pa_evidence(pbp, rows, want["pa"])
+    return codes == want["mlb_kept_codes"] and descs == want["statcast_descriptions"]
 
 
 def expected_keys(pbp: dict) -> set:
@@ -1736,7 +1810,7 @@ def key_check(expected: set, actual: set) -> dict:
 def gate_body(seasons=DEV_SEASONS, raw_path=ORIG["raw"], expected=EXPECTED_COMPLETED, absent=EXPECTED_ABSENT):
     res = {"mapping_version": MAPPING_VERSION, "seasons": {}, "tests": []}
     raw = pd.read_parquet(raw_path, columns=["game_pk", "game_type", "game_year", "at_bat_number", "pitch_number",
-                                             "post_home_score", "post_away_score"])
+                                             "post_home_score", "post_away_score", "description"])
     raw = raw[raw["game_type"] == "R"]
     vocab_all = Counter()
     for season in seasons:
@@ -1757,7 +1831,7 @@ def gate_body(seasons=DEV_SEASONS, raw_path=ORIG["raw"], expected=EXPECTED_COMPL
                 return g, json.loads(fetch(PBP_URL.format(pk=g), MLB_CACHE / "pbp" / f"{g}.json", valid_pbp)), None
             except Exception as exc:  # noqa: BLE001
                 return g, None, str(exc)
-        unavailable, mismatch, score_bad, missing, unrec = [], [], [], [], []
+        unavailable, mismatch, score_bad, missing, unrec, shortfall = [], [], [], [], [], []
         with ThreadPoolExecutor(max_workers=FETCH_THREADS) as ex:
             for g, pbp, err in ex.map(one, games):
                 if err:
@@ -1772,7 +1846,9 @@ def gate_body(seasons=DEV_SEASONS, raw_path=ORIG["raw"], expected=EXPECTED_COMPL
                     continue
                 kc = key_check(expected_keys(pbp), statcast[g])
                 if not kc["ok"]:
-                    mismatch.append({"game_pk": g, **kc})
+                    listed = expected_shortfall(season, g, kc, pbp, r[r["game_pk"] == g])
+                    (shortfall if listed else mismatch).append(
+                        {"game_pk": g, **kc, **({"diagnosis": "confirmed missing pitch (amendment 2)"} if listed else {})})
                 c = comp.loc[g]
                 if not (smax.loc[g, "post_home_score"] == c["home_score"] and smax.loc[g, "post_away_score"] == c["away_score"]):
                     score_bad.append({"game_pk": g, "statcast": smax.loc[g].tolist(),
@@ -1784,10 +1860,12 @@ def gate_body(seasons=DEV_SEASONS, raw_path=ORIG["raw"], expected=EXPECTED_COMPL
              "duplicate_statcast_keys": dup, "unavailable": unavailable, "key_mismatch": mismatch[:50],
              "n_key_mismatch": len(mismatch), "score_mismatch": score_bad[:50], "n_score_mismatch": len(score_bad),
              "missing_games": missing, "unexpected_statcast_games": unexpected_ids, "unrecognized_events": unrec[:50],
-             "n_unrecognized": len(unrec)}
+             "n_unrecognized": len(unrec), "expected_shortfall": shortfall,
+             "expected_shortfall_listed": sorted(EXPECTED_DEV_SHORTFALL.get(season, {}))}
         s["ok"] = ((SMOKE or len(comp) == expected.get(season)) and s["cancelled_example_excluded"] is not False
                    and not dup and not unavailable and not mismatch and not score_bad and not unexpected_ids and not unrec
-                   and set(missing) == (exp_absent if not SMOKE else set(missing) & exp_absent))
+                   and set(missing) == (exp_absent if not SMOKE else set(missing) & exp_absent)
+                   and (SMOKE or {x["game_pk"] for x in shortfall} == set(EXPECTED_DEV_SHORTFALL.get(season, {}))))
         res["seasons"][season] = s
     res["vocabulary"] = [{"type": k[0], "isPitch": k[1], "code": k[2], "call": k[3], "eventType": k[4], "kept": kept(
         {"type": k[0], "isPitch": k[1], "details": {"code": k[2], "call": {"code": k[3]} if k[3] else None}}), "n": v}
@@ -1853,6 +1931,19 @@ def selftest_results() -> list:
     case("frames_compare: -0.0 equals 0.0 by value", frames_compare(a, b, ["k"])["identical"])
     case("frames_compare: dtype change fails", not frames_compare(a, a.astype({"x": "float32"}), ["k"])["identical"])
     case("frames_compare: duplicate keys fail", not frames_compare(pd.concat([a, a]), pd.concat([a, a]), ["k"])["identical"])
+    # amendment 1: the one permitted dtype difference (support.n, int64 stored vs float64 new), values exact
+    sk = list(arsenal.SUPPORT_KEY)
+    sref = pd.DataFrame({**{k: [0, 1] for k in sk}, "n": np.array([3, 5], "int64"), "share": [0.5, 0.5]})
+    snew = sref.assign(n=sref["n"].astype("float64"))
+    pa_ = lambda new, ref, t="support": frames_compare(permitted_dtype(t, new, ref)[0], ref, sk)["identical"]  # noqa: E731
+    case("amendment 1: support.n float64 with equal integral values passes", pa_(snew, sref))
+    case("amendment 1: a changed n value still fails", not pa_(snew.assign(n=[3.0, 6.0]), sref))
+    case("amendment 1: a non-integral n fails (no cast)", not pa_(snew.assign(n=[3.0, 5.5]), sref))
+    case("amendment 1: a NaN n fails (no cast)", not pa_(snew.assign(n=[3.0, np.nan]), sref))
+    case("amendment 1: the reverse direction (int64 new, float64 stored) fails", not pa_(sref, snew))
+    case("amendment 1: n in another table is not permitted", not pa_(snew, sref, t="pitches"))
+    case("amendment 1: another column's dtype difference still fails",
+         not pa_(snew.assign(share=snew["share"].astype("float32")), sref))
     # deep_compare
     s1 = {"t": a, "f": float("nan"), "l": [1, {"z": 2}], "s": {1, 2}}
     s2 = {"t": a.copy(), "f": float("nan"), "l": [1, {"z": 2}], "s": {2, 1}, "new": 1}
@@ -1897,7 +1988,8 @@ def selftest_results() -> list:
     # mapping and keys
     play = lambda i, evs: {"about": {"atBatIndex": i}, "playEvents": evs}  # noqa: E731
     P = {"isPitch": True, "type": "pitch", "details": {"code": "B", "call": {"code": "B"}}}
-    IBB = {"isPitch": False, "type": "no_pitch", "pitchNumber": 0, "details": {"code": "VB", "call": {"code": "VB"}}}
+    IBB = {"isPitch": False, "type": "no_pitch", "pitchNumber": 0,
+           "details": {"code": "VB", "call": {"code": "VB"}, "description": "Automatic Ball - Intentional"}}
     PK = {"isPitch": False, "type": "pickoff", "details": {"code": "1"}}
     NP = {"isPitch": False, "type": "no_pitch", "details": {"code": "N"}}
     pbp = {"allPlays": [play(0, [P, P]), play(1, [PK]), play(2, [IBB, IBB, IBB, IBB]), play(3, [PK, NP, P])]}
@@ -2011,8 +2103,32 @@ def selftest_results() -> list:
     chal = {"type": "action", "isPitch": False, "details": {"eventType": "abs_challenge"}}
     case("vocabulary: an unseen action subtype is distinguishable", event_signature(sub) != event_signature(chal))
     odd = {"type": "no_pitch", "isPitch": False, "details": {"code": "N", "call": {"code": "N"}}}
-    case("mapping: a no-pitch event with a non-automatic call is not kept and is unrecognized",
-         not kept(odd) and unrecognized(odd) and kept(IBB) and not unrecognized(IBB))
+    case("mapping v2: a no-pitch call without an automatic description is kept but unrecognized (gate fails)",
+         kept(odd) and unrecognized(odd) and kept(IBB) and not unrecognized(IBB))
+    tmo = {"type": "no_pitch", "isPitch": False,
+           "details": {"code": "AB", "call": {"code": "AB"}, "description": "Automatic Strike - Batter Timeout Violation"}}
+    case("mapping v2: an automatic call outside v1's list (AB) is kept and recognized", kept(tmo) and not unrecognized(tmo))
+    case("mapping v2: a no-pitch event with no call is not kept", not kept(NP) and not unrecognized(NP))
+    kc0 = {"n_missing": 1, "n_extra": 0, "missing": [(68, 5)], "extra": []}
+    pit = lambda c: {"isPitch": True, "type": "pitch", "details": {"code": c, "call": {"code": c}}}  # noqa: E731
+    pbp68 = {"allPlays": [{"about": {"atBatIndex": 67}, "playEvents": [pit(c) for c in ("F", "B", "F", "*B", "S")]}]}
+    rows68 = pd.DataFrame({"at_bat_number": [68] * 4, "pitch_number": [1, 2, 3, 4],
+                           "description": ["foul", "ball", "foul", "swinging_strike"]})
+    case("expected shortfall: only the listed game, exact key difference and both event sequences qualify",
+         expected_shortfall(2024, 746731, kc0, pbp68, rows68) and not expected_shortfall(2025, 746731, kc0, pbp68, rows68)
+         and not expected_shortfall(2024, 746731, {**kc0, "missing": [(68, 4)]}, pbp68, rows68)
+         and not expected_shortfall(2024, 746731, {**kc0, "n_extra": 1, "extra": [(1, 1)]}, pbp68, rows68)
+         and not expected_shortfall(2024, 745093, kc0, pbp68, rows68) and not expected_shortfall(2024, 746731, kc0))
+    case("expected shortfall: another omitted pitch with the same missing key fails (MLB sequence differs)",
+         not expected_shortfall(2024, 746731, kc0, {"allPlays": [{"about": {"atBatIndex": 67}, "playEvents":
+                                                                  [pit(c) for c in ("F", "B", "C", "*B", "S")]}]}, rows68))
+    case("expected shortfall: a different Statcast sequence fails",
+         not expected_shortfall(2024, 746731, kc0, pbp68, rows68.assign(description=["foul", "ball", "ball", "swinging_strike"])))
+    case("fetch validation: a repeated atBatIndex is rejected (Astra)",
+         not valid_pbp({"allPlays": [play(0, [P]), play(0, [P])]}) and valid_pbp({"allPlays": [play(0, [P]), play(1, [P])]}))
+    big = pd.DataFrame({**{k: [0] for k in sk}, "n": np.array([2.0 ** 70]), "share": [1.0]})
+    case("amendment 1: a value too large for int64 is not cast (Neon)",
+         permitted_dtype("support", big, sref.iloc[:1].reset_index(drop=True))[1].endswith("not applied"))
     case("fetch validation: malformed play-by-play is rejected",
          not valid_pbp({"allPlays": [{"about": {}}]}) and not valid_pbp([]) and valid_pbp(pbp))
     case("fetch validation: total on empty plays, null events and null about",
