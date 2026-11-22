@@ -20,6 +20,13 @@ probabilities for P0, C1 and the league-pooled level stay fail-closed (heldout_m
 `checks` (coverage, environment, B2) label each sample, so the smoke stand-in never shares a label with development 2024;
 (3) season child results (run, halves, validate) are strict JSON (json_safe: +inf/-inf labels, NaN as null). Review round 1 (Astra): B2 labels, the
 validate summaries' NaN, and per-component wording in the zero-probability disclosure.
+Revision 10 (2026-11-22, after the user authorized A11-4 and the 2026 run): phase 3, 2026 (§7, §8.2; below). Review
+rounds: Neon (forward binding, refetch precedence, §7 fallback tests, postponed dates) and Astra (the reconciled snapshot
+pinned and built from; the step-1 schedule pinned; recoverable days against the window; the C8b regression through the
+production forward route; coverage-first forward table; zero rule in the weighted Pearson). Official dates map games
+to Savant's days (a suspended game keeps its date). Also the
+small-group listing centers each season on the listed group's mean (Astra's 2023 review), and the mover-group summary
+gains the secondary weighted Pearson. Accepts revision 9's records (domains, 2023).
 
     python3.12 s9_seasons.py selftest    # synthetic checks only; reads no project data, writes nothing
     python3.12 s9_seasons.py guard       # once: hash the protected inventory
@@ -42,6 +49,20 @@ verify ("ready for target-season work") and the season's authorization record ve
     python3.12 s9_seasons.py validate 2023           # once: §6 rows 2-9 and the 2023-2024 pair (child process)
     python3.12 s9_seasons.py report 2023             # once: reports/research_s9_2023.md
 Smoke runs the season stages only on the stand-in 2024 (a development season), never on a target season.
+
+Phase 3 (revision 10): 2026. After A11-4 (`authorize 2026`): the committed downloader fetches the days outside this
+script (§8.2 step 2: `statcast_download_seasons.py fetch 2026 --start <first> --end <last>`, dates from the schedule);
+then
+    python3.12 s9_seasons.py prefetch 2026        # schedule and play-by-play into the cache
+    python3.12 s9_seasons.py reconcile 2026       # once: §8.2 step 3 on the cached days; lists any refetch days
+    (one documented refetch: the command the reconcile record prints), then
+    python3.12 s9_seasons.py reconcile2 2026      # once, only after a refetch: step 5's decision
+    python3.12 s9_seasons.py publish 2026         # once: the downloader's build, the reference schema -> raw.parquet
+    python3.12 s9_seasons.py build 2026; checks 2026
+After the separate Stage C authorization (`authorize-run 2026 <date>`, only on the user's instruction):
+    python3.12 s9_seasons.py forward 2026         # once: §7 forward queries and §6 row 10 (child process)
+    python3.12 s9_seasons.py run 2026; halves 2026; validate 2026; report 2026
+Smoke runs this whole path on the stand-in 2024, from a day cache seeded with the subset's development rows.
 
 Bindings (§3): one binding per process. A context (single-season run, joint run, halves refit, replay) runs as its own
 child process `s9_seasons.py _ctx <name>` with its paths in the environment variable S9_BIND (JSON), applied at import
@@ -176,7 +197,9 @@ RECORD_IDS = {"alphas": ("season", "fold"), "policy_alphas": ("season", "scoring
               "abnormal_log": ("season", "component", "code", "inner", "lambda")}
 # Reviewed earlier revisions whose records a later one accepts. Revision 8 (phase 2) accepts revision 7's development
 # records (guard, audit, control, gate_v<MAPPING_VERSION>, domains): revision 7's final digest, set when it is committed.
-APPROVED_PREDECESSOR_SCRIPTS = frozenset({"080ac1996b03c8da17a6e1cd76bed80b4df99364b428f21b7ece080c65ce846c"})
+APPROVED_PREDECESSOR_SCRIPTS = frozenset({"080ac1996b03c8da17a6e1cd76bed80b4df99364b428f21b7ece080c65ce846c",
+                                         # revision 9 (d07c31f): domains and the 2023 records
+                                         "b7df0294683c373cd73c82eb93f7ecbf8ad150d52ca7c565af37b819fb065a10"})
 # Protocol amendment 1 (approved by the user 2026-11-22, after the first production control failed at C1 on this): the stored
 # arsenal_support.parquet was written by Phase 0 on 2026-10-27 under ca9d25c, whose support_table counted rows with
 # .size() (int64). Commit 483d573 (2026-10-29) added unit weights (weighting.w, float), so the frozen package's
@@ -184,22 +207,26 @@ APPROVED_PREDECESSOR_SCRIPTS = frozenset({"080ac1996b03c8da17a6e1cd76bed80b4df99
 # new dtype); applied only in tables_compare (C1, C2), only to integral finite values, and nothing else is relaxed.
 PERMITTED_DTYPE = (("support", "n", "int64", "float64"),)
 
-# Phase 2: target seasons (§3, §5, §6). 2026's fetch, reconcile, publish and forward stages are phase 3 (§7, §8.2).
-TARGETS = (2023,)                    # production: the season stages run only on these, each after its authorization
+# Phase 2: target seasons (§3, §5, §6); phase 3 adds 2026's acquisition and forward stages (§7, §8.2).
+TARGETS = (2023, 2026)               # production: the season stages run only on these, each after its authorization
 SMOKE_STANDIN = 2024                 # smoke only: a development season stands in for a target, so no target row is read
 SEASON_LABEL = {2023: "previously unmodeled, with prior data-quality inspection disclosed",
                 2026: "not previously downloaded"}
-AUTHORIZATION = {2023: "A11-3"}
-PAIRS = {2023: ((2023, 2024),), SMOKE_STANDIN: ((2024, 2025),)}   # §6 row 6: the A4 pairs a season belongs to
+AUTHORIZATION = {2023: "A11-3", 2026: "A11-4"}
+RUN_AUTHORIZATION = {2026: "Stage C (A5)"}   # §10: 2026's forward and run stages need this second authorization
+PAIRS = {2023: ((2023, 2024),), 2026: ((2025, 2026), (2024, 2026)),
+         SMOKE_STANDIN: ((2024, 2025),)}     # §6 row 6: the A4 pairs a season belongs to
+ACQ_DIR = (Path(SMOKE).resolve() / "statcast_seasons") if SMOKE else D / "statcast_seasons"   # the downloader's tree
 SEASONS_ROOT = (Path(SMOKE).resolve() / "seasons") if SMOKE else D / "seasons"
 REPORTS_OUT = (Path(SMOKE).resolve() / "reports") if SMOKE else ROOT / "reports"
-SEASON_CONTEXT_STAGES = ("run", "halves", "validate")     # season stages whose work runs in a bound child process
+SEASON_CONTEXT_STAGES = ("run", "halves", "validate", "forward")     # season stages whose work runs in a bound child process
 PROTOCOL_LOCKED_ON = "2026-11-21"
 CAL_MIN_N = 10                       # §6 row 10: calibration is not computed on fewer rows (Neon)
 # Each child context belongs to exactly one stage (Astra: bind the dispatched context to its reserved stage).
 CONTEXT_STAGE = {"smoke_ref": "control", "single": "control", "joint": "control", "halves": "control",
                  "replay": "control", "forward": "control",
-                 "season_run": "run", "season_halves": "halves", "season_validate": "validate"}
+                 "season_run": "run", "season_halves": "halves", "season_validate": "validate",
+                 "season_forward": "forward"}
 EXPECTED_PREDECESSORS = {"guard": set(), "audit": {"guard"}, "control": {"guard", "audit"}}   # gate_v<n>: {"guard"}
 
 
@@ -958,6 +985,20 @@ def expected_predecessors(stage: str):
     if not y.isdigit():
         return None
     a = f"authorize_{y}"
+    gate = f"gate_v{MAPPING_VERSION}"
+    if acquired(int(y)):
+        r = f"authorize_run_{y}"
+        return {"authorize": {"guard"}, "authorize_run": {"guard", a},
+                "reconcile": {"guard", "audit", "control", gate, "domains", a},
+                "reconcile2": {"guard", a, f"reconcile_{y}"},
+                "publish": {"guard", a, last_reconcile(int(y))},
+                "build": {"guard", a, f"publish_{y}"},
+                "checks": {"guard", a, f"build_{y}", "domains", gate},
+                "forward": {"guard", a, r, f"checks_{y}"},
+                "run": {"guard", a, r, f"forward_{y}"},
+                "halves": {"guard", a, r, f"run_{y}"},
+                "validate": {"guard", a, r, f"run_{y}", f"halves_{y}"},
+                "report": {"guard", a, r, f"checks_{y}", f"forward_{y}", f"run_{y}", f"validate_{y}"}}.get(name)
     return {"authorize": {"guard"},
             "extract": {"guard", "audit", "control", f"gate_v{MAPPING_VERSION}", "domains", a},
             "build": {"guard", a, f"extract_{y}"},
@@ -2054,9 +2095,13 @@ def season_info(year: int) -> dict:
             raise SystemExit(f"refused: smoke runs the season stages only on the stand-in {SMOKE_STANDIN} (a development "
                              f"season), never on a target season")
         return {"year": year, "source": ORIG["raw"], "pairs": PAIRS[year], "authorization": "smoke",
-                "label": "smoke stand-in (a development season; means nothing)"}
+                "run_authorization": "smoke", "label": "smoke stand-in (a development season; means nothing)"}
     if year not in TARGETS:
-        raise SystemExit(f"refused: season stages are implemented for {TARGETS} only (2026 needs phase 3: §7, §8.2)")
+        raise SystemExit(f"refused: season stages are implemented for {TARGETS} only")
+    if year == 2026:
+        return {"year": year, "source": SEASONS_ROOT / "2026" / "raw.parquet", "pairs": PAIRS[year],
+                "authorization": AUTHORIZATION[year], "run_authorization": RUN_AUTHORIZATION[year],
+                "label": SEASON_LABEL[year]}
     return {"year": year, "source": RAW_2015_2023, "pairs": PAIRS[year], "authorization": AUTHORIZATION[year],
             "label": SEASON_LABEL[year]}
 
@@ -2110,6 +2155,12 @@ def season_gate(year: int, stage: str) -> dict:
     bad = record_problems(f"authorize_{year}", rec, identity())
     if bad or (rec.get("result") or {}).get("season") != year:
         raise SystemExit(f"refused: the authorization record for {year} does not verify: {bad}")
+    if acquired(year) and stage in RUN_STAGES:      # §10: 2026's run stages need the separate Stage C authorization
+        rr, rerr = read_record(record_path(f"authorize_run_{year}"))
+        rbad = [rerr] if rerr else record_problems(f"authorize_run_{year}", rr, identity())
+        if rbad or (rr.get("result") or {}).get("season") != year:
+            raise SystemExit(f"refused: no valid run authorization for {year} ({rbad}); it is written only on the "
+                             f"user's explicit instruction: s9_seasons.py authorize-run {year} <YYYY-MM-DD>")
     drec, derr = read_record(record_path("domains"))
     dbad = [derr] if derr else record_problems("domains", drec, identity())
     if dbad:      # §5 B0: the closed domains are recorded before any target access, prefetch included (Astra)
@@ -2203,6 +2254,8 @@ EXTRACT_COLUMNS = list(dict.fromkeys(loader.RAW_COLUMNS + research_s7.RAW_COLUMN
 
 
 def stage_extract(year: int):
+    if acquired(year):
+        raise SystemExit(f"refused: {year}'s raw file is published from the reconciled download (§8.2), not extracted")
     info = season_gate(year, "extract")
 
     def body():
@@ -2227,7 +2280,7 @@ def stage_build(year: int):
     season_gate(year, "build")
 
     def body():
-        bad = verify_inputs(f"extract_{year}")
+        bad = verify_inputs(f"{raw_stage(year)}_{year}")
         if bad:
             return {"passed": False, "stopped": f"inputs changed: {bad}"}
         sd = season_dir(year)
@@ -2370,8 +2423,10 @@ def environment_tables(p: pd.DataFrame, a: pd.DataFrame, season) -> dict:
     den = called | t["description"].isin(["ball", "blocked_ball"])
     zone = t["zone"].astype("float").map(lambda z: str(int(z)) if z in set(range(1, 10)) | {11, 12, 13, 14} else "missing or other")
     cs = pd.DataFrame({"zone": zone[den], "called": called[den]}).groupby("zone")["called"].agg(["size", "sum"])
+    cs = cs.reindex([str(z) for z in (*range(1, 10), 11, 12, 13, 14)] + ["missing or other"], fill_value=0)
+    cs.index.name = "zone"
     cs = cs.rename(columns={"size": "denominator", "sum": "called_strikes"}).reset_index()
-    cs["rate"] = cs["called_strikes"] / cs["denominator"]
+    cs["rate"] = (cs["called_strikes"] / cs["denominator"].where(cs["denominator"] > 0)).astype(float)
     cs.insert(0, "season", season)
     total = {"season": season, "zone": "all", "denominator": int(den.sum()), "called_strikes": int(called.sum()),
              "rate": float(called.sum() / den.sum()) if den.sum() else float("nan")}
@@ -2386,7 +2441,9 @@ def environment_tables(p: pd.DataFrame, a: pd.DataFrame, season) -> dict:
                 "walk_final_not_taken_at_three_balls": int((~(w["balls"].eq(3) &
                                                              w["description"].isin(loader.BALL_DESCRIPTIONS))).sum()),
                 "strikeout_pas": len(k), "strikeout_final_not_at_two_strikes": int((~k["strikes"].eq(2)).sum())}
-    seq = {"season": season, "row_share": float(p["pa_sequence_error"].astype(bool).mean()),
+    seq = {"season": season, "rows": int(p["pa_sequence_error"].astype(bool).sum()), "rows_total": len(p),
+           "row_share": float(p["pa_sequence_error"].astype(bool).mean()),
+           "pas": int(a["pa_sequence_error"].astype(bool).sum()), "pas_total": len(a),
            "pa_share": float(a["pa_sequence_error"].astype(bool).mean())}
     return {"called_strike": cs, "walks": walks, "pitch_mix": pitch_type_shares(p, season), "sequence_errors": seq,
             "terminal": terminal}
@@ -2498,6 +2555,8 @@ def season_completeness(year: int, r: pd.DataFrame, vocab_dev: set) -> dict:
             return g, None, str(exc)
     with ThreadPoolExecutor(max_workers=FETCH_THREADS) as ex:
         for g, pbp, err in ex.map(one, games):
+            if g not in statcast:            # absent from Statcast, independent of the reference fetch (Astra)
+                s["missing_games"].append(g)
             if err:
                 s["unavailable"].append({"game_pk": g, "error": err})
                 continue
@@ -2509,7 +2568,6 @@ def season_completeness(year: int, r: pd.DataFrame, vocab_dev: set) -> dict:
                 for x in new:
                     s["new_signatures"][str(x)] = s["new_signatures"].get(str(x), 0) + 1
             if g not in statcast:
-                s["missing_games"].append(g)
                 continue
             kc = key_check(expected_keys(pbp), statcast[g])
             if not kc["ok"]:
@@ -2534,7 +2592,7 @@ def stage_checks(year: int):
     season_gate(year, "checks")
 
     def body():
-        bad = verify_inputs(f"extract_{year}", f"build_{year}")
+        bad = verify_inputs(f"{raw_stage(year)}_{year}", f"build_{year}")
         if bad:
             return {"passed": False, "stopped": f"inputs changed: {bad}"}
         sd = season_dir(year)
@@ -2589,7 +2647,7 @@ def stage_run(year: int):
     season_gate(year, "run")
 
     def body():
-        bad = verify_inputs(f"extract_{year}", f"build_{year}")
+        bad = verify_inputs(f"{raw_stage(year)}_{year}", f"build_{year}")
         if bad:
             return {"passed": False, "stopped": f"inputs changed: {bad}"}
         c = run_child("season_run", season_binding(year, "run"))
@@ -2601,7 +2659,7 @@ def stage_halves(year: int):
     season_gate(year, "halves")
 
     def body():
-        bad = verify_inputs(f"extract_{year}", f"build_{year}", f"run_{year}")
+        bad = verify_inputs(f"{raw_stage(year)}_{year}", f"build_{year}", f"run_{year}")
         if bad:
             return {"passed": False, "stopped": f"inputs changed: {bad}"}
         c = run_child("season_halves", season_binding(year, "halves"))
@@ -2613,7 +2671,7 @@ def stage_validate(year: int):
     season_gate(year, "validate")
 
     def body():
-        bad = verify_inputs(f"extract_{year}", f"build_{year}", f"run_{year}", f"halves_{year}")
+        bad = verify_inputs(f"{raw_stage(year)}_{year}", f"build_{year}", f"run_{year}", f"halves_{year}")
         if bad:
             return {"passed": False, "stopped": f"inputs changed: {bad}"}
         c = run_child("season_validate", season_binding(year, "validate"))
@@ -2936,6 +2994,15 @@ def season_analyses(scores: pd.DataFrame, year: int, halves, calendar, runs) -> 
                                          for se, ff in fits.items() for (sc, fx), f in ff.items()])
         res["spread"] = spread_table(fits, sets, scores)
         res["effects"] = {f"{sc}_{'fixed' if fx else 'random'}": f["saved"] for (sc, fx), f in fits[year].items()}
+        if acquired(year):     # §2: R3a (documented practice) is vp's R3 relabeled; R3b also drops possible exposure
+            t = res["sensitivity"]["table"].copy()
+            t["check"] = t["check"].replace({"R3_D": "R3a_D", "R3_A": "R3a_A"})
+            ex = res["sensitivity"]["excluded"].copy()
+            if len(ex):
+                ex["check"] = ex["check"].replace({"R3_D": "R3a_D", "R3_A": "R3a_A"})
+            res["sensitivity"] = {"table": t, "excluded": ex}
+            res["r3b"] = r3b_full(scores, config.PITCHES_PARQUET, fits, sets, (year,))
+            res["flagged_catchers"] = flagged_catchers(scores, config.PITCHES_PARQUET, year)
         return res
     finally:
         vp.SEASONS = old_seasons
@@ -2965,7 +3032,7 @@ def pair_repeatability(combined: pd.DataFrame, pair: tuple) -> dict:
     return {"pair": list(pair), "sets": {k: {"qual": len(v["qual"]), "main": len(v["main"])} for k, v in sets.items()},
             "repeatability": rep, "movers": movers, "primary": prim,
             "mover_counts_eligible": elig["group"].value_counts(dropna=False).to_dict(),
-            "small_groups": small_group_listing(rep, movers)}
+            "small_groups": small_group_listing(rep, movers), "by_group_weighted": group_weighted_pearson(rep, movers)}
 
 
 def small_group_listing(rep: dict, movers: pd.DataFrame) -> pd.DataFrame:
@@ -2978,11 +3045,32 @@ def small_group_listing(rep: dict, movers: pd.DataFrame) -> pd.DataFrame:
         if len(ids) >= vp.MIN_SET:
             continue
         for sc in ("D", "A"):
-            e = rep["effects"][sc, "random"].reindex(ids)
+            e_all = rep["effects"][sc, "random"].reindex(elig)
+            e = e_all.reindex(ids)
+            c0, c1_ = e["y0"] - e["y0"].mean(), e["y1"] - e["y1"].mean()
+            a0, a1 = e_all["y0"] - e_all["y0"].mean(), e_all["y1"] - e_all["y1"].mean()
             for c_ in ids:
                 rows.append({"group": grp, "score": sc, "catcher": c_, "saved_0": e.loc[c_, "y0"], "saved_1": e.loc[c_, "y1"],
-                             "change": e.loc[c_, "y1"] - e.loc[c_, "y0"]})
-    return pd.DataFrame(rows, columns=["group", "score", "catcher", "saved_0", "saved_1", "change"])
+                             "raw_difference": e.loc[c_, "y1"] - e.loc[c_, "y0"],
+                             "centered_on_pair": a1.loc[c_] - a0.loc[c_], "change_centered": c1_.loc[c_] - c0.loc[c_]})
+    return pd.DataFrame(rows, columns=["group", "score", "catcher", "saved_0", "saved_1", "raw_difference",
+                                       "centered_on_pair", "change_centered"])
+
+
+def group_weighted_pearson(rep: dict, movers: pd.DataFrame) -> pd.DataFrame:
+    """§4's secondary weighted Pearson by mover group (random fits), with the pair's weights; a group under MIN_SET is
+    listed, not correlated (revision 10, Astra's 2023 review)."""
+    rows = []
+    for grp in ("mover", "non_mover", "neither"):
+        ids = sorted(set(movers.index[movers["group"] == grp]) & set(rep["eligible"]))
+        for sc in ("D", "A"):
+            e = rep["effects"][sc, "random"].reindex(ids)
+            t = rep["table"]
+            zero = (t[(t["score"] == sc) & (t["model"] == "random")]["pearson"] == vp.UNDEFINED).any()
+            wp = (vp.UNDEFINED if zero else f"listed (n < {vp.MIN_SET})" if len(ids) < vp.MIN_SET else
+                  vp.weighted_pearson(e["y0"].to_numpy(), e["y1"].to_numpy(), e["w"].to_numpy()))
+            rows.append({"group": grp, "score": sc, "n": len(ids), "weighted_pearson": wp})
+    return pd.DataFrame(rows)
 
 
 def ctx_season_validate():
@@ -3050,9 +3138,27 @@ def ctx_season_validate():
 RULE_NOTES = {2023: [
     "Runners-on pitch timer 20 s (18 s from 2024); five mound visits (four from 2024); a narrower runner's lane.",
     "Pitch timer, shift limits, larger bases and disengagement limits since 2023; pitchers may wear PitchCom "
-    "transmitters and call their own pitches since 2023."]}
+    "transmitters and call their own pitches since 2023."],
+    2026: [
+    "ABS challenge system: two challenges per team; the pitcher, catcher or batter challenges; an overturned call "
+    "changes the count. Assumption, kept explicit: `description` records the final call after any challenge.",
+    "Base coaches confined to the box.",
+    "Savant documents changed measurements (plate_x and plate_z at mid-plate; ABS-defined sz_top and sz_bot) and gives "
+    "no cross-year algorithm for `zone`: zone comparability across years may be affected (the called-strike-by-zone "
+    "check and C1's chase feature, zones 11-14). The frozen forward predictor does not read 2026 zones; under ABS, "
+    "2026's outcomes, counts and eligible sample, and so forward performance, can still change (context).",
+    "Pitch timer, shift limits, larger bases and disengagement limits since 2023; pitchers may wear PitchCom "
+    "transmitters and call their own pitches since 2023.",
+    "Dugout pitch calling (§2): MIA documented for all 2026 regular-season games (R3a, R3b); COL possible exposure "
+    "from Opening Day with no supported last date (R3b only); NYM: no regular-season documentation found (not a "
+    "verified negative). Primary analyses keep every pitch (D1)."]}
 PAIR_LABEL = {(2023, 2024): "Combines one previously unmodeled season (2023) with one development season (2024).",
+              (2025, 2026): "Combines the last development season (2025) with the not previously downloaded season (2026).",
+              (2024, 2026): "A separately labeled two-year comparison (2024 and 2026), not consecutive seasons.",
               (2024, 2025): "Smoke stand-in pair (development seasons)."}
+REFERENCE_DISCLOSURE = ("Reference seasons: 2025 data are drawn from the frozen 2025 extract, which covers 2,428 of 2,430 "
+                        "completed games (the two Tokyo games are absent); the frozen 2024 extract omits one pitch "
+                        "recorded by MLB (game 746731, plate appearance 68; protocol amendment 2).")
 LEFT_OUT = ("the S1 (a)-(e) reruns", "the interpretation examples", "the D-vs.-A evidence-table update",
             "bridge removal", "the recovery simulation", "forward prediction for 2023 (A4)")
 
@@ -3095,6 +3201,72 @@ def zero_probability_note(zero: list) -> list:
     return L
 
 
+def split_listing(d: dict) -> list:
+    """Protocol §3: a split whose compared set is under MIN_SET is listed, not correlated: each catcher's two half
+    estimates (D and A, both fits), and the half-specific drop reasons."""
+    L = []
+    small = [c for c in d.get("compare", []) if isinstance(c.get("n"), (int, np.integer)) and c["n"] < vp.MIN_SET]
+    if small:
+        for k, e in d.get("effects", {}).items():
+            L += [f"Listed (n < {vp.MIN_SET}), {k[0]} {k[1]}:", "", md_table(e.reset_index())]
+    if len(d.get("dropped", [])):
+        L += ["Dropped catchers and half-specific reasons:", "", md_table(d["dropped"])]
+        dropped = list(d["dropped"]["catcher"])
+        for k in (("D", "random"), ("A", "random")):
+            e = (d.get("effects_all") or {}).get(k)
+            if e is not None:
+                L += [f"Dropped catchers' half estimates where a half fit exists, {k[0]} {k[1]}:", "",
+                      md_table(e.reindex([c for c in dropped if c in e.index]).reset_index())]
+    return L
+
+
+def refit_diagnostics(d: dict) -> list:
+    """The half refit's logged diagnostics (P0: games, candidates, scored, shares and each role fold's pooling
+    strengths; C1 logs scored pitches and resources only, which is said)."""
+    meta = d.get("meta") or {}
+    rows = []
+    for h, m in meta.items():
+        r = {"half": h, **{k: m[k] for k in ("games", "candidates", "scored", "scored_share", "out_of_arsenal_share")
+                           if k in m}}
+        for role, a in (m.get("alphas") or {}).items():
+            r.update({f"alpha_{c}_role{role}": v for c, v in a.items()})
+        rows.append(r)
+    if not rows:
+        return []
+    note = [] if any("alphas" in m for m in meta.values()) else \
+        ["This version's half refit logs scored pitches only; its pooling strengths were not logged.", ""]
+    return ["Half-refit diagnostics:", "", md_table(pd.DataFrame(rows))] + note
+
+
+def forward_section(fwd: dict) -> list:
+    """§6 row 10 (2026 only): forward prediction with the frozen 2025 P0 and C1 and both baselines fitted on 2025."""
+    t = fwd["table"]
+    cols = [c for c in ("component", "stratum", "n", "share", "P0", "C1", "gain_C1_minus_P0", "criterion_baseline",
+                        "criterion_zero_probability_rows", "league_pooled_P0", "max_cal_P0", "max_cal_C1",
+                        "max_cal_criterion", "max_cal_league") if c in t.columns]
+    L = ["## Forward prediction (§6 row 10; frozen 2025 models; nats)", "",
+         "All 2026 outcome-fit-eligible pitches (contact: contact-fit-eligible), with no arsenal restriction. Seen cell, "
+         "unseen pitcher and action unseen in 2025 are defined on the 2025 outcome-training rows (both components); "
+         "unseen batter on the 2025 C1 model's batters. A stratum under 10 rows gets log loss and n only. Descriptive; "
+         "no gate.", "", md_table(t[cols], 5),
+         "Stratum counts: " + "; ".join(f"{k}: {v}" for k, v in fwd["strata_counts"].items()), ""]
+    hit = [z for z in fwd["zero"] if z["zero_probability_rows"]]
+    if hit:
+        L += ["**Criterion baseline: zero probabilities (disclosure).** The criterion baseline fitted on 2025 (unchanged "
+              "definition) gave an observed 2026 class probability exactly 0; its log loss is +inf where so, reported "
+              "as such, nothing floored.", ""]
+        for z in hit:
+            L += [f"- {z['component']}: {z['zero_probability_rows']} of {z['n']} rows.", "",
+                  md_table(pd.DataFrame(z["breakdown"])), md_table(pd.DataFrame(z["rows"]))]
+            if z["zero_probability_rows"] > z["rows_listed"]:
+                L += [f"(The first {z['rows_listed']} of {z['zero_probability_rows']} rows are listed; all are in the "
+                      f"breakdown above.)", ""]
+    full_cal = [c for c in t.columns if c.startswith("cal_")]
+    L += ["Calibration by category (10 equal-count bins), every stratum:", "",
+          md_table(t[["component", "stratum"] + full_cal], 5)]
+    return L
+
+
 def report_text(year: int, checks: dict, tables: dict, run: dict, full: dict) -> str:
     info = season_info(year)
     L = [f"# S9 season {year}: P0 and C1 within-season results and pairs", "",
@@ -3108,10 +3280,18 @@ def report_text(year: int, checks: dict, tables: dict, run: dict, full: dict) ->
     if year in RULE_NOTES:
         L += ["## Compatibility notes (§2; reported with the results, not exclusions)", ""] + \
              [f"- {x}" for x in RULE_NOTES[year]] + [""]
+    L += ["## Disclosures", "", f"- {REFERENCE_DISCLOSURE}",
+          f"- Season label: {info['label']}." + (" Prior 2023 data-quality inspection: completeness, label-share and "
+                                                 "column-availability checks and a schema comparison, before any model "
+                                                 "touched 2023 (protocol, Disclosure)." if year == 2023 else ""), ""]
     c = checks["completeness"]
     L += ["## Row checks (§5)", "",
           f"- Completeness: **{c['outcome']}**; {c['completed']} completed games on the schedule, {c['checked']} checked; "
-          f"score discrepancies explained by a verified non-pitch scoring event: {len(c['score_explained'])}.",
+          f"score discrepancies explained by a verified non-pitch scoring event: {len(c['score_explained'])}"
+          + (" (" + "; ".join(f"game {e['game_pk']}: official {e['official'][0]}-{e['official'][1]}, Statcast "
+                               f"{e['statcast'][0]}-{e['statcast'][1]}, non-pitch runs after the last pitch "
+                               f"{e['nonpitch_runs_after_last_pitch']}" for e in c["score_explained"]) + ")"
+             if c["score_explained"] else "") + ".",
           f"- B0: duplicate keys in the whole raw file {checks['B0']['duplicate_keys_whole_file']}; domain violations "
           f"{checks['B0']['domain_violations'] or 'none'}; events accepted through the frozen code list only "
           f"{checks['B0']['events_accepted_through_code_only'] or 'none'}; null counts {checks['B0']['nulls']}; "
@@ -3119,7 +3299,9 @@ def report_text(year: int, checks: dict, tables: dict, run: dict, full: dict) ->
           f"- B1 (report): {checks['B1']}.", f"- B2: pitch types not seen in 2024-2025: {checks['B2_new_in_target'] or 'none'}.",
           "- Pre-fit checks: " + ("all passed" if all(x["ok"] for x in checks["prefit"]) else
                                   str([x for x in checks["prefit"] if not x["ok"]])), ""]
-    L += ["### Coverage", "", md_table(tables["coverage"]), "### Environment (reported against 2024 and 2025)", "",
+    env_head = "### Environment (reported against 2024 and 2025" + (
+        "; 2026 zones are labeled possibly not comparable, §2)" if acquired(year) else ")")
+    L += ["### Coverage", "", md_table(tables["coverage"]), env_head, "",
           md_table(tables["called_strike"]), md_table(tables["walks"]), md_table(tables["sequence_errors"]),
           md_table(tables["terminal"]), "### Pitch types (B2)", "", md_table(tables["B2"]), ""]
     L += ["## Full run (§6 row 1)", ""]
@@ -3127,8 +3309,11 @@ def report_text(year: int, checks: dict, tables: dict, run: dict, full: dict) ->
         L.append(f"- {v}: {d['scored']} scored pitches; abnormal-termination records {len(d['abnormal_log'])}.")
     L += [f"- C1 post-run reconstruction (coverage first): {run['reconstruction_C1']}.", "",
           "## Held-out prediction (§6 row 2; one matched set per component; nats)", "", md_table(full["heldout"], 5),
-          "A passing comparison shows better probabilities, not better comparisons between pitch choices.", ""]
+          "Descriptive; no gate. A lower held-out log loss shows better probabilities, not better comparisons between "
+          "pitch choices.", ""]
     L += zero_probability_note(full.get("heldout_zero", []))
+    if acquired(year) and "forward" in run:
+        L += forward_section(run["forward"])
     for v in ("P0", "C1"):
         s = full[v]["season"]
         L += [f"## {v}", "", "### Headline spread (A3): a descriptive model estimate, never a skill distribution", "",
@@ -3139,26 +3324,56 @@ def report_text(year: int, checks: dict, tables: dict, run: dict, full: dict) ->
               "(ddof 1).", "",
               md_table(s["spread"], 5), "### Split of existing scores (random halves)", "",
               md_table(pd.DataFrame(s["split_random"][year]["compare"])),
-              md_table(pd.DataFrame(s["split_random"][year]["gap"])),
+              md_table(pd.DataFrame(s["split_random"][year]["gap"])), *split_listing(s["split_random"][year]),
               "### Split of existing scores (calendar halves; secondary)", "",
               md_table(pd.DataFrame(s["split_calendar"][year]["compare"])),
+              md_table(pd.DataFrame(s["split_calendar"][year]["gap"])), *split_listing(s["split_calendar"][year]),
               "### Independent refit in each half", "", md_table(pd.DataFrame(s["refit"][year]["compare"])),
-              md_table(pd.DataFrame(s["refit"][year]["gap"])),
-              "### Between-team share, staff diagnostic", "", md_table(s["team_staff"]["share"]),
-              md_table(s["team_staff"]["staff"]), "### Same-team pairs (protocol §6.4)", "",
-              md_table(s["team_staff"]["pairs"]), "### Sensitivity (R1, R2, R3, R4)", "",
-              md_table(s["sensitivity"]["table"])]
+              md_table(pd.DataFrame(s["refit"][year]["gap"])), *split_listing(s["refit"][year]),
+              *refit_diagnostics(s["refit"][year]),
+              "### Between-team share, staff diagnostic", "",
+              "Between-team share: the descriptive share of fitted-score variation between primary-team groups, not "
+              "the fraction caused by teams; unrelated scores would give about (T - 1)/(N - 1).", "",
+              md_table(s["team_staff"]["share"].assign(unrelated_benchmark=lambda t: (t["teams"] - 1) / (t["catchers"] - 1))),
+              "Staff diagnostic: the correlation with the pitch-weighted mean of the same fit's pitcher effects; a "
+              "diagnostic of how the fitted model divides variation between catchers and pitchers, not independent "
+              "evidence about staff quality.", "", md_table(s["team_staff"]["staff"]), "### Same-team pairs (protocol §6.4)", "",
+              "Same team; pitcher assignments may differ. No test.", "",
+              md_table(s["team_staff"]["pairs"]),
+              "### Sensitivity (R1, R2, " + ("R3a, R3b" if acquired(year) else "R3") + ", R4)", "",
+              md_table(s["sensitivity"]["table"]), "Sensitivity exclusions:", "", md_table(s["sensitivity"]["excluded"])]
+        L.append("R4 (bases empty only) changes only the ranking sample: the outcome, contact and policy models and "
+                 "the payoffs are still learned from the runners-on pitches it excludes.\n")
         if year == 2023:
             L.append("R3 in 2023: no club is flagged, so R3 removes no pitches.\n")
+        if acquired(year) and "r3b" in s:
+            L += ["R3a drops the documented club's fielding-team pitches (MIA); R3b also drops the possible-exposure "
+                  "club's (COL), as a broad bound. Both keep the opponents' pitches and change only the ranking sample.",
+                  "", md_table(s["r3b"]["table"]), "R3b excluded catchers:", "", md_table(s["r3b"]["excluded"]),
+                  "Flagged clubs' catchers (§2):", "", md_table(s["flagged_catchers"])]
         for pair, p in full[v]["pairs"].items():
             L += [f"### Pair {pair[0]}-{pair[1]}", "", PAIR_LABEL.get(tuple(pair), "") + " The other season's scores are "
                   "the stored ones of the same version; mover groups come from this pair's primary teams. The pairs are "
                   "not independent.", "", md_table(p["repeatability"]["table"]),
-                  f"Mover groups among the pair's eligible catchers: {p['mover_counts_eligible']}.", "",
+                  f"Mover groups among the pair's eligible catchers: {p['mover_counts_eligible']}. Mover comparisons, "
+                  f"not natural experiments. Within-season movers (at least 300 scorable pitches for two or more "
+                  f"teams): " + ", ".join(f"{se}: {int(pr['within_mover'].sum())}" for se, pr in p["primary"].items())
+                  + ".", "",
                   "By mover group (random fits; groups under 10 are listed, not correlated):", "",
-                  md_table(p["repeatability"]["by_group"]), "Catchers in groups under 10:", "",
-                  md_table(p["small_groups"]), "Disconnected catchers:", "",
+                  md_table(p["repeatability"]["by_group"]),
+                  "Weighted Pearson by mover group (secondary; random fits):", "",
+                  md_table(p["by_group_weighted"] if "by_group_weighted" in p else
+                           group_weighted_pearson(p["repeatability"], p["movers"])),
+                  "Catchers in groups under 10 (change centered on the listed group's means, as score differences are):",
+                  "", md_table(p["small_groups"] if "change_centered" in p["small_groups"] else
+                               small_group_listing(p["repeatability"], p["movers"])), "Disconnected catchers:", "",
                   md_table(p["repeatability"]["disconnected"])]
+        if year == 2026 and not SMOKE:
+            ref = STORED_REF["v2"] if v == "P0" else STORED_REF["s8"]
+            with open(ref, "rb") as f:
+                stored = pickle.load(f)["repeatability"]["table"]
+            L += ["### Pair 2024-2025 (stored results, examined; not recomputed)", "",
+                  f"From `{Path(ref).relative_to(ROOT)}`. " + REFERENCE_DISCLOSURE, "", md_table(stored)]
     L += ["## Left out (D2, approved)", "", "; ".join(LEFT_OUT) + ".", ""]
     return "\n".join(L)
 
@@ -3167,11 +3382,15 @@ def stage_report(year: int):
     season_gate(year, "report")
 
     def body():
-        bad = verify_inputs(f"checks_{year}", f"run_{year}", f"validate_{year}")
+        bad = verify_inputs(f"checks_{year}", f"run_{year}", f"validate_{year}",
+                            *([f"forward_{year}"] if acquired(year) else []))
         if bad:
             return {"passed": False, "stopped": f"inputs changed: {bad}"}
         checks = load_record(f"checks_{year}")["result"]
         run = load_record(f"run_{year}")["result"]["context"]
+        if acquired(year):
+            with open(season_dir(year) / "forward" / "forward.pkl", "rb") as f:
+                run = {**run, "forward": pickle.load(f)}
         with open(season_dir(year) / "checks_tables.pkl", "rb") as f:
             tables = pickle.load(f)
         with open(season_dir(year) / "validate" / "validate.pkl", "rb") as f:
@@ -3185,11 +3404,710 @@ def stage_report(year: int):
     run_season_stage(year, "report", body)
 
 
+# ===================================================================================== phase 3: 2026 (§7, §8.2)
+#
+# Order (§10): after A11-4: authorize -> prefetch -> reconcile -> (one documented refetch -> reconcile2) -> publish ->
+# build -> checks; after the separate Stage C authorization (authorize_run): forward -> run -> halves -> validate ->
+# report. The day files come from the committed downloader (statcast_download_seasons.py fetch), run outside this
+# script as §8.2 step 2 prescribes; reconcile reads its cache, and publish calls its build and converts the season file
+# with statcast_combine_seasons.target_schema. Smoke: the stand-in runs this whole path on development rows (a day
+# cache seeded from the subset), so no target row is read.
+
+RUN_STAGES = ("forward", "run", "halves", "validate", "report")
+
+
+def acquired(year: int) -> bool:
+    """2026's path: acquisition (§8.2), forward prediction (§7), R3a/R3b, two authorizations. Smoke: the stand-in."""
+    return year == 2026 or (bool(SMOKE) and year == SMOKE_STANDIN)
+
+
+def raw_stage(year: int) -> str:
+    """The stage that wrote the season's raw.parquet: publish (2026, smoke stand-in) or extract (2023)."""
+    return "publish" if acquired(year) else "extract"
+
+
+def last_reconcile(year: int) -> str:
+    return f"reconcile2_{year}" if record_path(f"reconcile2_{year}").exists() else f"reconcile_{year}"
+
+
+def downloader():
+    """The committed downloader (§8.2 steps 2 and 6), imported only by the acquisition stages."""
+    import statcast_download_seasons as dl
+    return dl
+
+
+def game_dates(schedule: dict) -> dict:
+    """game_pk -> the official date(s) it was played on: Savant files a game's pitches under its official date (a
+    suspended game finished the next day keeps its original official date, e.g. 745180 in 2024), so that is the day
+    to check and refetch. A postponed or cancelled entry is not a played date."""
+    out = {}
+    for d in schedule.get("dates", []):
+        for g in d.get("games", []):
+            if (g.get("status") or {}).get("detailedState") in ("Postponed", "Cancelled"):
+                continue            # the game was not played that day (Neon: 36 such entries in 2024, 30 in 2025)
+            out.setdefault(int(g["gamePk"]), set()).add(g.get("officialDate") or d["date"])
+    return out
+
+
+def step1_schedule_paths(year: int) -> tuple:
+    """§8.2 step 1's recorded schedule and its query record (written when the download began)."""
+    d = ACQ_DIR / f"acquisition_{year}"
+    return d / f"schedule_{year}.json", d / "schedule_query.json"
+
+
+def smoke_seed_cache(year: int) -> dict:
+    """Smoke only: the stand-in's day files in the downloader's layout (one CSV per game_date, the reference columns),
+    written from the development raw rows of the subset, with one empty day either side of the season; and a step-1
+    schedule record copied from the gate's cached schedule."""
+    if not SMOKE:
+        raise RuntimeError("smoke_seed_cache runs only in smoke mode")
+    dl = downloader()
+    meta_path = ACQ_DIR / f"days_{year}.json"
+    if meta_path.exists():
+        return {"seeded": False}
+    raw = smoke_subset(pd.read_parquet(ORIG["raw"], filters=[("game_year", "=", year)]))
+    ref = dl.reference_columns()
+    gd = pd.to_datetime(raw["game_date"]).dt.strftime("%Y-%m-%d")
+    days = sorted(gd.unique())
+    first, last = dl.shift(days[0], -1), dl.shift(days[-1], 1)
+    cache = ACQ_DIR / "cache" / str(year)
+    cache.mkdir(parents=True, exist_ok=True)
+    meta = {}
+    for day in dl.days_between(first, last):
+        g = raw[gd == day].assign(game_date=day)[ref]
+        g.to_csv(cache / f"{day}.csv", index=False)
+        meta[day] = {"rows": len(g), "tries": 1, "games": int(g["game_pk"].nunique()) if len(g) else 0,
+                     "r_rows": int((g["game_type"] == "R").sum()) if len(g) else 0, "capped": False}
+    meta_path.write_text(json.dumps(meta, indent=1, sort_keys=True))
+    (ACQ_DIR / f"window_{year}.json").write_text(json.dumps({"first": first, "last": last}))
+    raw_s = fetch(SCHEDULE_URL.format(season=year), MLB_CACHE / "schedule" / f"{year}.json", valid_schedule)
+    sp, qp = step1_schedule_paths(year)
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_bytes(raw_s)
+    qp.write_text(json.dumps({"query": SCHEDULE_URL.format(season=year), "sha256": hashlib.sha256(raw_s).hexdigest(),
+                              "note": "smoke: copied from the gate's cached schedule"}))
+    return {"seeded": True, "days": len(meta), "rows": int(len(raw))}
+
+
+def take_snapshot(year: int, attempt: int) -> tuple:
+    """Copies the downloader's window, day metadata and every day file of the window, plus the step-1 schedule, into
+    the season's acquisition snapshot, and returns (snapshot directory, manifest of sha256 by relative path). The
+    reconciliation reads only the snapshot, and publish builds from it after verifying the manifest (Astra)."""
+    import shutil
+    dl = downloader()
+    snap = season_dir(year) / "acquisition" / f"attempt{attempt}"
+    if snap.exists():
+        raise FileExistsError(f"{snap} exists")
+    window = json.loads((ACQ_DIR / f"window_{year}.json").read_text())
+    days = dl.days_between(window["first"], window["last"])
+    (snap / "cache" / str(year)).mkdir(parents=True)
+    files = [Path(f"window_{year}.json"), Path(f"days_{year}.json")] + \
+        [Path("cache") / str(year) / f"{d}.csv" for d in days if (ACQ_DIR / "cache" / str(year) / f"{d}.csv").exists()]
+    for rel in files:
+        shutil.copy2(ACQ_DIR / rel, snap / rel)
+    sp, qp = step1_schedule_paths(year)
+    for p in (sp, qp):
+        if p.exists():
+            shutil.copy2(p, snap / p.name)
+    manifest = {str(p.relative_to(snap)): sha(p) for p in sorted(snap.rglob("*")) if p.is_file()}
+    return snap, manifest
+
+
+def verify_snapshot(snap: Path, manifest: dict) -> list:
+    have = {str(p.relative_to(snap)) for p in snap.rglob("*") if p.is_file()}
+    bad = [f"missing {k}" for k in manifest if k not in have]
+    bad += [f"changed {k}" for k, h in manifest.items() if k in have and sha(snap / k) != h]
+    return bad
+
+
+def cache_rows(year: int, src: Path) -> tuple:
+    """The window's day files under `src` (the snapshot), as the downloader's build reads them: trimmed to the regular
+    season's first and last dates, projected on the reference columns, identical duplicate rows dropped (counted)."""
+    dl = downloader()
+    window = json.loads((src / f"window_{year}.json").read_text())
+    meta = json.loads((src / f"days_{year}.json").read_text())
+    cache = src / "cache" / str(year)
+    days = dl.days_between(window["first"], window["last"])
+    info = {"window": window, "days_in_window": len(days),
+            "days_not_fetched": [d for d in days if d not in meta or not (cache / f"{d}.csv").exists()]}
+    if info["days_not_fetched"]:
+        return info, None, meta
+    frames = [df for df in (dl.parse((cache / f"{d}.csv").read_bytes()) for d in days) if not df.empty]
+    if not frames:
+        info["no_rows"] = True
+        return info, None, meta
+    df = pd.concat(frames, ignore_index=True)
+    ref = dl.reference_columns()
+    reg = df.loc[(df["game_type"] == "R") & (df["game_year"] == year), "game_date"].astype(str)
+    if reg.empty:
+        info["no_regular_season_rows"] = True
+        return info, None, meta
+    first_r, last_r = reg.min(), reg.max()
+    gd = df["game_date"].astype(str)
+    df = df[(gd >= first_r) & (gd <= last_r)]
+    info.update(first_regular_season_date=first_r, last_regular_season_date=last_r,
+                boundary=bool(first_r <= window["first"] or last_r >= window["last"]),
+                missing_reference_columns=[c for c in ref if c not in df.columns],
+                extra_columns=sorted(c for c in df.columns if c not in ref), rows_in_season_window=int(len(df)))
+    proj = df[[c for c in ref if c in df.columns]]
+    before = len(proj)
+    proj = proj.drop_duplicates()
+    info["identical_duplicate_rows_dropped"] = int(before - len(proj))
+    dup = proj.duplicated(["game_pk", "at_bat_number", "pitch_number"], keep=False)
+    info["conflicting_keys"] = int(proj.loc[dup, ["game_pk", "at_bat_number", "pitch_number"]].drop_duplicates().shape[0])
+    info["conflicting_key_examples"] = proj.loc[dup, ["game_pk", "at_bat_number", "pitch_number"]].drop_duplicates() \
+        .head(10).to_dict("records")
+    return info, proj.reset_index(drop=True), meta
+
+
+def key_digest(df: pd.DataFrame) -> str:
+    """Order-free digest of the rows' (game_type, game_pk, at_bat_number, pitch_number), all game types."""
+    k = df[["game_type", "game_pk", "at_bat_number", "pitch_number"]].astype(str).sort_values(
+        ["game_pk", "at_bat_number", "pitch_number", "game_type"]).reset_index(drop=True)
+    return hashlib.sha256(pd.util.hash_pandas_object(k, index=False).to_numpy().tobytes()).hexdigest()
+
+
+def schedule_completed(schedule: dict) -> dict:
+    c = completed_games(schedule)
+    return {int(g): (None if pd.isna(r["home_score"]) else int(r["home_score"]),
+                     None if pd.isna(r["away_score"]) else int(r["away_score"])) for g, r in c.iterrows()}
+
+
+def acquisition_outcome(attempt: int, integrity: list, refetch: list, comp: dict, capped: list) -> str:
+    """§8.2 step 5's precedence after reconciliation: data integrity > blocked for review > defer > pass. On the first
+    attempt, a recoverable problem (a missing or incomplete game, an empty response, a capped day) calls for the one
+    documented refetch (step 4) unless the evidence is already blocked for review; the recoverable days are recorded
+    either way."""
+    if integrity:
+        return "stop: data integrity"
+    base = classify_completeness(comp)
+    if base.startswith("stop"):
+        return "stop: data integrity"
+    if base == "blocked for review":       # not recoverable by a refetch: the user diagnoses first (Neon)
+        return "blocked for review"
+    if attempt == 1 and refetch:
+        return "refetch required"
+    if base.startswith("incomplete") or capped:
+        return "defer 2026: " + ("confirmed missing game or event" if base.startswith("incomplete") else
+                                 "capped day persists after the refetch")
+    return "pass"
+
+
+def recoverable_days(window: dict, meta: dict, played: list, missing_or_incomplete_dates: list) -> dict:
+    """§8.2 step 4's recoverable days, against the explicit window bounds (Astra): every scheduled played date of a
+    missing or incomplete game inside the window, every scheduled played date inside the window whose day returned
+    no rows, and every fetched day of the window at the row cap. Played dates outside the window are listed apart
+    (a data-integrity stop, not a refetch)."""
+    dl = downloader()
+    inside = lambda d: window["first"] <= d <= window["last"]  # noqa: E731
+    days = dl.days_between(window["first"], window["last"])
+    capped = [d for d in days if (meta.get(d) or {}).get("capped")]
+    empty = [d for d in played if inside(d) and not (meta.get(d) or {}).get("rows")]
+    outside = sorted({d for d in played if not inside(d)})
+    refetch = sorted({d for d in missing_or_incomplete_dates if inside(d)} | set(empty) | set(capped))
+    return {"capped": capped, "empty": empty, "outside": outside, "refetch": refetch}
+
+
+def reconcile_body(year: int, attempt: int) -> dict:
+    seeded = smoke_seed_cache(year) if SMOKE and attempt == 1 else None
+    snap, manifest = take_snapshot(year, attempt)
+    res = {"attempt": attempt, "acq_dir": str(ACQ_DIR), "smoke_seed": seeded, "snapshot": str(snap),
+           "snapshot_manifest": manifest}
+    sch_bytes = fetch(SCHEDULE_URL.format(season=year), MLB_CACHE / "schedule" / f"{year}.json", valid_schedule)
+    sch = json.loads(sch_bytes)
+    gdates = game_dates(sch)
+    checked = completeness_games(completed_games(sch))
+    played = sorted({d for g in checked for d in gdates.get(int(g), ())})
+    window = json.loads((snap / f"window_{year}.json").read_text())
+    meta = json.loads((snap / f"days_{year}.json").read_text())
+    # the step-1 schedule (recorded when the download began) against the gate's cached schedule
+    sp = snap / f"schedule_{year}.json"
+    q = json.loads((snap / "schedule_query.json").read_text()) if (snap / "schedule_query.json").exists() else {}
+    step1_ok = sp.exists() and sha(sp) == q.get("sha256")
+    diff = {}
+    if step1_ok:
+        a, b = schedule_completed(json.loads(sp.read_bytes())), schedule_completed(sch)
+        diff = {"only_step1": sorted(set(a) - set(b))[:20], "only_gate": sorted(set(b) - set(a))[:20],
+                "score_differs": sorted(g for g in set(a) & set(b) if a[g] != b[g])[:20]}
+    res["schedules"] = {"step1": {"path": str(sp), "sha256": sha(sp) if sp.exists() else None,
+                                  "recorded_sha256": q.get("sha256"), "query": q.get("query")},
+                        "gate": {"path": str(MLB_CACHE / "schedule" / f"{year}.json"),
+                                 "sha256": hashlib.sha256(sch_bytes).hexdigest()}, "completed_game_differences": diff}
+    info, proj, _ = cache_rows(year, snap)
+    res["cache"] = info
+    if proj is None:      # a diagnostic that keeps the scheduled refetch list (Astra)
+        rv = recoverable_days(window, meta, played, played)
+        res.update(recoverable=rv, refetch_days=rv["refetch"], outcome="stop: days not fetched" if
+                   info.get("days_not_fetched") else ("refetch required" if attempt == 1 and rv["refetch"] else
+                                                      "stop: no regular-season rows"))
+        res["passed"] = res["outcome"] == "refetch required"
+        if res["passed"]:
+            res["refetch_command"] = refetch_command(year, window, rv["refetch"])
+        return res
+    res["published_key_digest"] = key_digest(proj)
+    res["rows_by_game_type"] = {str(k): int(v) for k, v in proj["game_type"].value_counts().items()}
+    r = proj[(proj["game_type"] == "R") & (proj["game_year"] == year)].reset_index(drop=True)
+    r = smoke_subset(r)
+    comp_s = season_completeness(year, r, gate_vocabulary())
+    fed = {int(f["game_pk"]) for f in comp_s["feed_stop"]}
+    gone = comp_s["missing_games"] + [m["game_pk"] for m in comp_s["key_mismatch"] if m["n_missing"] > 0]
+    mi_dates = sorted({d for g in gone if int(g) not in fed for d in gdates.get(int(g), ())})
+    rv = recoverable_days(window, meta, played, mi_dates)
+    integrity = [x for x, bad in (("conflicting pitch keys", info["conflicting_keys"]),
+                                  ("regular-season game ids not on the schedule", comp_s["unexpected_statcast_games"]),
+                                  ("schedule dates outside the fetched window", rv["outside"]),
+                                  ("regular season touches the fetched window", info["boundary"]),
+                                  ("reference columns missing", info["missing_reference_columns"]),
+                                  ("the step-1 schedule record is missing or does not match its recorded digest",
+                                   not step1_ok),
+                                  ("the step-1 and gate schedules disagree on completed games or scores",
+                                   any(diff.values()))) if bad]
+    outcome = acquisition_outcome(attempt, integrity, rv["refetch"], comp_s, rv["capped"])
+    res.update(completeness=comp_s, regular_season_rows=int(len(r)), recoverable=rv, days_at_row_cap=rv["capped"],
+               empty_days_with_completed_games=rv["empty"], schedule_dates_outside_window=rv["outside"],
+               refetch_days=rv["refetch"], integrity=integrity, outcome=outcome,
+               passed=outcome in ("pass", "refetch required"))
+    if outcome == "refetch required":
+        res["refetch_command"] = refetch_command(year, window, rv["refetch"])
+    return res
+
+
+def refetch_command(year: int, window: dict, days: list) -> str:
+    """The one documented refetch, into this mode's downloader tree (--out explicit: smoke never writes the real one)."""
+    return (f"python3.12 statcast_download_seasons.py fetch {year} --start {window['first']} --end {window['last']} "
+            f"--pad-before 0 --pad-after 0 --max-extend 0 --out {ACQ_DIR} --refetch {','.join(days)}")
+
+
+def stage_reconcile(year: int):
+    if not acquired(year):
+        raise SystemExit(f"refused: reconcile is 2026's acquisition step (§8.2); {year} is extracted")
+    season_gate(year, "reconcile")
+    run_season_stage(year, "reconcile", lambda: reconcile_body(year, 1))
+
+
+def stage_reconcile2(year: int):
+    """After the one documented refetch (§8.2 step 4): every day the first reconciliation listed must have been
+    requested again after that record was written, and the downloader's day metadata rewritten with them."""
+    if not acquired(year):
+        raise SystemExit(f"refused: reconcile2 is 2026's acquisition step (§8.2); {year} is extracted")
+    season_gate(year, "reconcile2")
+    first, err = read_record(record_path(f"reconcile_{year}"))
+    if err or (first.get("result") or {}).get("outcome") != "refetch required":
+        raise SystemExit("refused: reconcile2 runs only after a first reconciliation that called for the refetch")
+    t1 = record_path(f"reconcile_{year}").stat().st_mtime
+    cache = ACQ_DIR / "cache" / str(year)
+    days = first["result"]["refetch_days"]
+    meta_p = ACQ_DIR / f"days_{year}.json"
+    meta = json.loads(meta_p.read_text())
+    stale = [d for d in days if not (cache / f"{d}.csv").exists() or (cache / f"{d}.csv").stat().st_mtime <= t1
+             or d not in meta]
+    if stale or meta_p.stat().st_mtime <= t1:     # before the record is reserved (Neon)
+        raise SystemExit(f"refused: the refetch is not complete (days {stale}; metadata rewritten: "
+                         f"{meta_p.stat().st_mtime > t1})")
+
+    def body():
+        res = reconcile_body(year, 2)
+        res["refetch"] = {"requested_days": days, "command": first["result"].get("refetch_command"),
+                          "metadata_after": {d: meta[d] for d in days},
+                          "files_after": {d: sha(cache / f"{d}.csv") for d in days}}
+        return res
+    run_season_stage(year, "reconcile2", body)
+
+
+def stage_publish(year: int):
+    """§8.2 step 6: the downloader's build on the reconciled snapshot (its manifest verified first), then the reference
+    schema (statcast_combine_seasons.target_schema) into data/seasons/<year>/raw.parquet; headers, extra and missing
+    columns, cast failures and widened columns recorded; the output's rows by game type and its key digest compared
+    with the reconciliation before it is accepted. Season outputs are hashed only from this file."""
+    if not acquired(year):
+        raise SystemExit(f"refused: publish is 2026's acquisition step (§8.2); {year} is extracted")
+    season_gate(year, "publish")
+    rname = last_reconcile(year)
+    rec, err = read_record(record_path(rname))
+    if err or (rec.get("result") or {}).get("outcome") != "pass":
+        raise SystemExit(f"refused: the last reconciliation ({rname}) did not pass")
+
+    def body():
+        import pyarrow.csv as pacsv
+        import statcast_combine_seasons as cs
+        dl = downloader()
+        rr = rec["result"]
+        snap = Path(rr["snapshot"])
+        bad_snap = verify_snapshot(snap, rr["snapshot_manifest"])
+        if bad_snap:
+            return {"passed": False, "stopped": f"the reconciled snapshot changed: {bad_snap[:10]}"}
+        code = dl.stage_build(year, snap, False)
+        if code != 0:
+            return {"passed": False, "stopped": f"the downloader's build stopped (exit {code})"}
+        summary = json.loads((snap / f"summary_{year}.json").read_text())
+        src = snap / f"statcast_all_pitches_{year}.csv"
+        schema, notes = cs.target_schema(snap, (year,))
+        convert = pacsv.ConvertOptions(column_types={f.name: f.type for f in schema}, strings_can_be_null=True)
+        table = pacsv.read_csv(src, convert_options=convert)
+        names_ok = table.schema.names == schema.names
+        dst = season_dir(year) / "raw.parquet"
+        if dst.exists():
+            raise FileExistsError(f"{dst} exists")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if names_ok:
+            pq.write_table(table.cast(schema), dst, compression="zstd")
+        sch, refs_ = (pq.read_schema(dst), pq.read_schema(ORIG["raw"])) if names_ok else (None, None)
+        bad = ({c: (str(sch.field(c).type) if c in sch.names else None, str(refs_.field(c).type))
+                for c in EXTRACT_COLUMNS if c not in sch.names or str(sch.field(c).type) != str(refs_.field(c).type)}
+               if names_ok else {"columns": "differ from the reference"})
+        t = pd.read_parquet(dst, columns=["game_type", "game_year", "game_pk", "at_bat_number", "pitch_number"]) \
+            if names_ok else None
+        n_r = int(len(smoke_subset(t[(t["game_type"] == "R") & (t["game_year"] == year)]))) if names_ok else -1
+        by_type = {str(k): int(v) for k, v in t["game_type"].value_counts().items()} if names_ok else {}
+        kd = key_digest(t) if names_ok else None
+        checks = [{"check": "the reconciled snapshot is unchanged (manifest verified before the build)", "ok": True},
+                  {"check": "the season file's columns are the reference columns, in order", "ok": names_ok},
+                  {"check": "downloader header matches the reference", "ok": bool(summary.get("header_matches_reference"))},
+                  {"check": "no duplicate pitch keys after the build", "ok": summary.get("duplicate_pitch_keys") == 0},
+                  {"check": "no day at the row cap", "ok": summary.get("days_at_row_cap") == []},
+                  {"check": "no unparseable game_date", "ok": summary.get("bad_game_dates") == 0},
+                  {"check": f"{len(EXTRACT_COLUMNS)} required columns present with the development types", "ok": not bad,
+                   "detail": bad or len(EXTRACT_COLUMNS)},
+                  {"check": "every row has this game_year", "ok": bool(names_ok and t["game_year"].eq(year).all())},
+                  {"check": "regular-season rows equal the reconciled count", "ok": n_r == rr["regular_season_rows"],
+                   "detail": {"published": n_r, "reconciled": rr["regular_season_rows"]}},
+                  {"check": "rows by game type equal the reconciliation's (all game types)",
+                   "ok": by_type == rr["rows_by_game_type"], "detail": {"published": by_type,
+                                                                        "reconciled": rr["rows_by_game_type"]}},
+                  {"check": "the published key digest equals the reconciliation's (all game types)",
+                   "ok": kd == rr["published_key_digest"]}]
+        acq = [src, snap / f"summary_{year}.json"]
+        return {"reconcile_record": rname, "snapshot": str(snap), "summary": summary, "schema_notes": notes,
+                "checks": checks,
+                "columns": {"extra_dropped_by_build": summary.get("extra_columns_dropped"),
+                            "cast_failed": summary.get("cast_failed"),
+                            "reference_empty_but_populated": summary.get("reference_empty_but_populated")},
+                "acquisition_files": file_digests([p for p in acq if p.exists()]),
+                "outputs": file_digests([dst]) if dst.exists() else {}, "passed": all(c["ok"] for c in checks)}
+    run_season_stage(year, "publish", body)
+
+
+def stage_authorize_run(year: int, date: str):
+    """2026 only: the separate Stage C run authorization (§10), required by forward, run, halves, validate, report."""
+    if not acquired(year):
+        raise SystemExit(f"refused: the run authorization is 2026's (§10); {year} needs only its authorization")
+    info = season_info(year)
+    if not valid_authorization_date(date):
+        raise SystemExit(f"refused: authorization date must be YYYY-MM-DD between {PROTOCOL_LOCKED_ON} and today")
+    rec, err = read_record(record_path(f"authorize_{year}"))
+    if err:
+        raise SystemExit(f"refused: the {year} download authorization is recorded first ({err})")
+
+    def body():
+        return {"passed": True, "season": year, "authorization": info["run_authorization"], "authorized_on": date,
+                "label": info["label"], "note": "recorded on the user's explicit instruction"}
+    run_stage(f"authorize_run_{year}", body, needs=("guard", f"authorize_{year}"))
+
+
+# ------------------------------------------------------------------------------------- forward (§7, §6 row 10)
+
+FORWARD_STRATA = ("seen_cell", "unseen_cell", "unseen_pitcher", "unseen_batter", "action_unseen_2025", "runners_on",
+                  "runners_off", "out_of_arsenal")
+
+
+def criterion_baseline(train: pd.DataFrame, obs: pd.DataFrame, kind: str) -> np.ndarray:
+    """§4 C7's criterion baseline fitted on `train` (validation._held_out's definition), for the query rows `obs`."""
+    if kind == "outcome":
+        tr, K, keys = models.outcome_training(train), models.N_OUTCOMES, ["cidx", "action"]
+        base = validation._league_baseline(tr, keys, ["cidx"], K)
+    else:
+        tr, K, keys = models.contact_training(train), models.N_BINS, ["action"]
+        n = models._counts(tr, keys, K)
+        base = (n + n.sum(axis=0) / n.to_numpy().sum()).div(n.sum(axis=1) + 1, axis=0)
+    bp = models._lookup(base, obs, keys, fill=np.nan)
+    overall = models._counts(tr.assign(_all=0), ["_all"], K).to_numpy()[0]
+    return np.where(np.isnan(bp), overall / overall.sum(), bp)
+
+
+def eligible_keys(p: pd.DataFrame, year: int, kind: str) -> pd.DataFrame:
+    """§7: the eligible key set and each key's observed class, from the pitch table's flags (not from a query)."""
+    s = p[p["season"] == year]
+    if kind == "outcome":
+        s = s[s["outcome_fit_eligible"].astype(bool)]
+        y = s["outcome"].map(models.OUTCOME_CODE)
+    else:
+        s = s[s["contact_fit_eligible"].astype(bool)]
+        y = s["contact_bin"].astype(int) - 1
+    return s[KEYS].assign(y=y.to_numpy().astype(int)).sort_values(KEYS).reset_index(drop=True)
+
+
+def forward_strata(test: pd.DataFrame, obs: pd.DataFrame, train: pd.DataFrame, c1_model=None, kind: str = "outcome",
+                   mask: str = "outcome") -> pd.DataFrame:
+    """Per query key: the §7 strata. Seen cell, unseen pitcher and unseen action are defined on the training season's
+    outcome-training rows (mask "outcome", the S9 definition, both components) or, for the C8b regression only, on
+    the component's own training rows (mask "component", the historical definition); unseen batter on the C1 model's
+    batters (False without a model)."""
+    tr = models.outcome_training(train) if mask == "outcome" or kind == "outcome" else models.contact_training(train)
+    pairs = set(map(tuple, tr[["pitcher", "action"]].drop_duplicates().to_numpy()))
+    pitchers, actions = set(tr["pitcher"]), set(tr["action"])
+    rows = test.loc[obs.index]
+    seen = np.array([(a, b) in pairs for a, b in obs[["pitcher", "action"]].to_numpy()])
+    batters = c1_model.features.batters if c1_model is not None else None
+    return rows[KEYS].reset_index(drop=True).assign(
+        action=obs["action"].to_numpy(), **({"cidx": obs["cidx"].to_numpy()} if "cidx" in obs else {}),
+        seen_cell=seen, unseen_cell=~seen, unseen_pitcher=~obs["pitcher"].isin(pitchers).to_numpy(),
+        unseen_batter=(~rows["batter"].isin(batters).to_numpy()) if batters is not None else np.zeros(len(obs), bool),
+        action_unseen_2025=~obs["action"].isin(actions).to_numpy(),
+        runners_on=rows["runners_on"].astype(bool).to_numpy(), runners_off=~rows["runners_on"].astype(bool).to_numpy(),
+        out_of_arsenal=~rows["in_eligible_set"].astype(bool).to_numpy())
+
+
+def forward_table(kind: str, frames: dict, strata: pd.DataFrame) -> tuple:
+    """§6 row 10 for one component: log loss of P0, C1 and both baselines and calibration (10 equal-count bins per
+    category), overall and in each stratum. Coverage first (Astra): the strata keys are unique and every frame covers
+    exactly those keys once; P0 and C1 are then matched by research.matched (same key, fold and class) and the
+    baselines joined one to one, so no row can enter a mean with a missing log. A stratum under CAL_MIN_N rows
+    (empty included) gets log loss and n only, its calibration labeled "not computed (n < 10)". The criterion
+    baseline's exact zeros are reported as +inf, the rows disclosed (revision 9's rule)."""
+    names = list(solver.OUTCOMES) if kind == "outcome" else [f"bin_{x}" for x in payoff.CONTACT_BINS]
+    if strata.duplicated(KEYS).any():
+        raise ValueError(f"{kind}: strata keys are not unique")
+    sk = strata[KEYS].sort_values(KEYS).reset_index(drop=True)
+    for v, f in frames.items():
+        fk = f[KEYS].sort_values(KEYS).reset_index(drop=True)
+        if f.duplicated(KEYS).any() or not fk.equals(sk):
+            raise ValueError(f"{kind}: frame {v} does not cover the strata keys exactly once")
+    with np.errstate(divide="ignore"):
+        mm = research.matched(frames["P0"], frames["C1"]).rename(columns={"lp_base": "P0", "lp_cand": "C1"})
+        lp = {v: frames[v][KEYS + ["y"]].assign(**{v: research._logp(frames[v])}) for v in ("criterion", "league")}
+    m = strata.merge(mm, on=KEYS, how="inner", validate="one_to_one")
+    for v in ("criterion", "league"):
+        m = m.merge(lp[v].rename(columns={"y": f"y_{v}"}), on=KEYS, how="inner", validate="one_to_one")
+        if not (m[f"y_{v}"] == m["y"]).all():
+            raise ValueError(f"{kind}: {v} disagrees on the observed class")
+    if len(m) != len(strata) or m[["P0", "C1", "league"]].isna().any().any() or m["criterion"].isna().any():
+        raise ValueError(f"{kind}: incomplete coverage after matching ({len(m)} of {len(strata)})")
+    rows = []
+    for name in ("all",) + FORWARD_STRATA:
+        mask = np.ones(len(m), bool) if name == "all" else m[name].to_numpy(bool)
+        g = m[mask]
+        row = {"component": kind, "stratum": name, "n": int(mask.sum()), "share": float(mask.mean()) if len(m) else 0.0,
+               "P0": np.nan, "C1": np.nan, "gain_C1_minus_P0": np.nan, "criterion_baseline": np.nan,
+               "league_pooled_P0": np.nan, "criterion_zero_probability_rows": int(np.isneginf(g["criterion"]).sum())}
+        if len(g):
+            row.update({"P0": -g["P0"].mean(), "C1": -g["C1"].mean(), "gain_C1_minus_P0": (g["C1"] - g["P0"]).mean(),
+                        "criterion_baseline": -g["criterion"].mean(), "league_pooled_P0": -g["league"].mean()})
+        for v, f in frames.items():
+            h = f.merge(g[KEYS], on=KEYS, how="inner")
+            P, y = h.filter(regex=r"^p\d+$").to_numpy(), h["y"].to_numpy()
+            k_ = f.filter(regex=r"^p\d+$").shape[1]
+            cals = [calibration_or_note(P[:, j], y == j) for j in range(k_)]
+            for nm, cv in zip(names, cals):
+                row[f"cal_{v}_{nm}"] = cv
+            num = [cv for cv in cals if not isinstance(cv, str)]
+            row[f"max_cal_{v}"] = max(num) if num else f"not computed (n < {CAL_MIN_N})"
+        rows.append(row)
+    zero = m.loc[np.isneginf(m["criterion"].to_numpy()), KEYS + [c for c in ("cidx", "action") if c in m] + ["y"]].copy()
+    zero["class"] = [names[int(y)] for y in zero["y"]]
+    by = [c for c in ("cidx", "action") if c in zero] + ["y", "class"]
+    return pd.DataFrame(rows), {"component": kind, "zero_probability_rows": int(len(zero)), "n": int(len(m)),
+                                "breakdown": zero.groupby(by).size().rename("rows").reset_index().to_dict("records")
+                                if len(zero) else [],
+                                "rows": zero.head(50).to_dict("records"), "rows_listed": min(len(zero), 50)}
+
+
+FWD_REG_TOL = 1e-12        # the production route against the stored 2024->2025 forward tables
+
+
+def forward_regression() -> list:
+    """C8b through the production route (Astra): the 2024->2025 development forward predictions stored by S8
+    (P0_repro, C1_full) and P0's 2024 refit, run through eligible_keys, criterion_baseline, forward_strata and
+    forward_table exactly as the 2026 stage runs them; the S9-mask table must reproduce s8_validate's forward table
+    (all, seen, unseen: n, P0, C1, gain; overall max calibration) and the component-mask table must reproduce v2's
+    forward_check rows (n, P0 log loss, both baselines, calibration by category; all, seen, unseen)."""
+    R = {k: str(v) for k, v in STORED_REF.items()}
+    dev = pd.read_parquet(ORIG["pitches"])
+    p24, p25 = dev[dev["season"] == 2024], dev[dev["season"] == 2025]
+    with open(R["s8"], "rb") as f:
+        s8 = pickle.load(f)["prediction"]["forward"]
+    with open(R["v2"], "rb") as f:
+        v2 = pickle.load(f)["forward"]
+    rows = []
+
+    def close(a, b):
+        if isinstance(a, str) or isinstance(b, str):
+            return a == b
+        return bool(np.isclose(float(a), float(b), rtol=0, atol=FWD_REG_TOL))
+    for kind in ("outcome", "contact"):
+        obs = models.outcome_training(p25) if kind == "outcome" else models.contact_training(p25)
+        fit = models.fit_outcome_model(p24) if kind == "outcome" else models.fit_contact_model(p24)
+        frames = {"P0": pd.read_parquet(Path(R["P0_dir"]) / f"forward_{kind}.parquet"),
+                  "C1": pd.read_parquet(Path(R["C1_dir"]) / f"forward_{kind}.parquet")}
+        frames = {v: f[KEYS + ["fold", "y"] + [c for c in f.columns if c.startswith("p") and c[1:].isdigit()]]
+                  for v, f in frames.items()}
+        frames["criterion"] = research._pred_frame(p25, obs, criterion_baseline(p24, obs, kind), fold=-1)
+        frames["league"] = research._pred_frame(p25, obs, fit.league_mean(obs), fold=-1)
+        want = eligible_keys(dev, 2025, kind)
+        for v, f in frames.items():
+            got = f[KEYS + ["y"]].sort_values(KEYS).reset_index(drop=True).astype({"y": int})
+            rows.append({"check": f"C8b {kind} {v}: stored forward keys and classes equal the eligible set",
+                         "identical": bool(got.equals(want))})
+        for mask, ref in (("outcome", "s8"), ("component", "v2")):
+            st = forward_strata(p25, obs, p24, None, kind, mask)
+            t = forward_table(kind, frames, st)[0].set_index("stratum")
+            if ref == "s8":
+                r8 = s8[s8["model"] == kind].set_index("sample")
+                for sname, lab in (("all", "all"), ("seen_cell", "seen cells"), ("unseen_cell", "unseen cells")):
+                    a, b = t.loc[sname], r8.loc[lab]
+                    ok = int(a["n"]) == int(b["n"]) and close(a["P0"], b["P0"]) and close(a["C1"], b["C1"]) and \
+                        close(a["gain_C1_minus_P0"], b["gain"])
+                    if sname == "all":
+                        ok = ok and close(a["max_cal_P0"], b["max_cal_P0"]) and close(a["max_cal_C1"], b["max_cal_C1"])
+                    rows.append({"check": f"C8b {kind} S9 mask {sname}: forward_table reproduces s8_validate",
+                                 "identical": bool(ok), "detail": {"new": [a["n"], a["P0"], a["C1"]],
+                                                                   "stored": [b["n"], b["P0"], b["C1"]]}})
+            else:
+                rv = v2[v2["model"] == kind].set_index("subset")
+                cats = list(solver.OUTCOMES) if kind == "outcome" else [f"bin_{x}" for x in payoff.CONTACT_BINS]
+                for sname, lab in (("all", "all"), ("seen_cell", "seen_cells"), ("unseen_cell", "unseen_cells")):
+                    if lab not in rv.index:
+                        continue
+                    a, b = t.loc[sname], rv.loc[lab]
+                    ok = int(a["n"]) == int(b["n"]) and close(a["P0"], b["log_loss"]) and \
+                        close(a["criterion_baseline"], b["baseline_log_loss"]) and \
+                        close(a["league_pooled_P0"], b["league_pooled_log_loss"]) and \
+                        all(close(a[f"cal_P0_{c}"], b[f"cal_{c}"]) for c in cats)
+                    rows.append({"check": f"C8b {kind} component mask {sname}: forward_table reproduces v2 (P0, both "
+                                          f"baselines, calibration by category)", "identical": bool(ok),
+                                 "detail": {"new": [a["n"], a["P0"], a["criterion_baseline"], a["league_pooled_P0"]],
+                                            "stored": [b["n"], b["log_loss"], b["baseline_log_loss"],
+                                                       b["league_pooled_log_loss"]]}})
+    return rows
+
+
+def stage_forward(year: int):
+    if not acquired(year):
+        raise SystemExit("refused: forward prediction is 2026's (§6 row 10); D2 leaves out 2023's")
+    season_gate(year, "forward")
+
+    def body():
+        bad = verify_inputs(f"{raw_stage(year)}_{year}", f"build_{year}", f"checks_{year}")
+        if bad:
+            return {"passed": False, "stopped": f"inputs changed: {bad}"}
+        c = run_child("season_forward", season_binding(year, "forward"))
+        return {"context": c, "outputs": c.get("outputs", {}), "passed": bool(c.get("passed")) and bool(c.get("outputs"))}
+    run_season_stage(year, "forward", body)
+
+
+def ctx_season_forward():
+    """§7 and §6 row 10: the four frozen 2025 models (hash-checked before loading) predict every outcome- and
+    contact-fit-eligible pitch of the season, as research.forward selects them (no arsenal restriction); both baselines
+    are fitted on the 2025 rows. Before matching, every query set must equal the key set and classes enumerated from
+    the pitch table; then the §7 probability checks; then the strata table."""
+    year = int(BIND["season"])
+    out = Path(BIND["out"])
+    res = {"probe": probe_check(BIND), "checks": []}
+    fw = json.loads(FORWARD_RECORD.read_text())
+    fitted = {}
+    for art in fw["artifacts"]:
+        blob = (ROOT / art["pickle"]["path"]).read_bytes()
+        ok = hashlib.sha256(blob).hexdigest() == art["pickle"]["sha256"]
+        res["checks"].append({"check": f"{art['model']} {art['component']} frozen pickle hash before loading",
+                              "identical": ok})
+        if ok:
+            fitted[art["model"], art["component"]] = pickle.loads(blob)
+    if len(fitted) != 4:
+        res.update(passed=False, stopped="a frozen pickle failed its hash; nothing was predicted")
+        ctx_result(res, strict=True)
+        return
+    dev = pd.read_parquet(ORIG["pitches"])
+    train25 = dev[dev["season"] == 2025]
+    pairs_rows = set(map(tuple, models.outcome_training(train25)[["pitcher", "action"]].drop_duplicates().to_numpy()))
+    pairs_pkl = set(map(tuple, fitted["P0", "outcome"].cell_n.index.to_frame(index=False)[["pitcher", "action"]]
+                        .drop_duplicates().to_numpy()))
+    res["checks"].append({"check": "seen-cell source: 2025 outcome-training pairs equal P0/outcome.pkl's pairs",
+                          "identical": pairs_rows == pairs_pkl, "detail": f"{len(pairs_rows)} / {len(pairs_pkl)}"})
+    reg = forward_regression()       # the production route on the stored 2024->2025 forward tables first (Astra)
+    res["checks"] += reg
+    if not all(c["identical"] for c in res["checks"]):
+        res.update(passed=False, stopped="the C8b regression through the production route failed; nothing predicted")
+        ctx_result(res, strict=True)
+        return
+    specs = {"P0": research.P0, "C1": replace(research_s8.SPECS["C1"], extra_inputs=(config.RAW_PARQUET,))}
+    pitches = research.base_tables()[0]
+    tables, zero, frames_out, counts = [], [], {}, {}
+    for kind in ("outcome", "contact"):
+        frames, obs_of, test_of = {}, {}, {}
+        for name, spec in specs.items():
+            rows = research.prepared(spec)[0]
+            test = rows[rows["season"] == year]
+            test = test[research._mask(spec.eval_mask, test)]
+            obs = research._training(kind, test, spec)
+            frames[name] = research._pred_frame(test, obs, fitted[name, kind].predict(obs), fold=-1)
+            obs_of[name], test_of[name] = obs, test
+        obs = obs_of["P0"]
+        frames["criterion"] = research._pred_frame(test_of["P0"], obs, criterion_baseline(train25, obs, kind), fold=-1)
+        frames["league"] = research._pred_frame(test_of["P0"], obs, fitted["P0", kind].league_mean(obs), fold=-1)
+        want = eligible_keys(pitches, year, kind)
+        for v, f in frames.items():
+            got = f[KEYS + ["y"]].sort_values(KEYS).reset_index(drop=True).astype({"y": int})
+            res["checks"].append({"check": f"{kind} {v}: query keys and classes equal the pitch table's eligible set",
+                                  "identical": bool(got.equals(want)), "detail": {"query": len(got), "eligible": len(want)}})
+        probs = {v: prob_matrix_problems(f) for v, f in frames.items()}
+        res["checks"].append({"check": f"{kind}: every probability matrix finite, in [0, 1], rows summing to 1 within "
+                                       f"{PROB_SUM_TOL}", "identical": not any(probs.values()),
+                              "detail": {k: v for k, v in probs.items() if v} or "all valid"})
+        with np.errstate(divide="ignore"):
+            fin = {v: bool(np.isfinite(research._logp(frames[v])).all()) for v in ("P0", "C1", "league")}
+            pc = frames["criterion"]
+            p_obs = pc.filter(regex=r"^p\d+$").to_numpy(float)[np.arange(len(pc)), pc["y"].to_numpy()]
+        res["checks"].append({"check": f"{kind}: P0, C1 and league-pooled log probabilities all finite",
+                              "identical": all(fin.values()), "detail": fin})
+        res["checks"].append({"check": f"{kind}: criterion baseline finite except exact zero probabilities on observed "
+                                       f"rows (+inf, disclosed)", "identical": bool(((p_obs > 0) | (p_obs == 0.0)).all()),
+                              "detail": int((p_obs == 0.0).sum())})
+        if not all(c["identical"] for c in res["checks"]):
+            res.update(passed=False, stopped=f"{kind}: a query-set, probability or finiteness check failed; no table")
+            ctx_result(res, strict=True)
+            return
+        strata = forward_strata(test_of["P0"], obs, train25, fitted["C1", kind], kind, "outcome")
+        counts[kind] = {s_: int(strata[s_].sum()) for s_ in FORWARD_STRATA} | {"all": int(len(strata))}
+        t, z = forward_table(kind, frames, strata)
+        tables.append(t)
+        zero.append(z)
+        for v, f in frames.items():
+            frames_out[f"{v}_{kind}"] = f
+    table = pd.concat(tables, ignore_index=True)
+    paths = []
+    for k, f in frames_out.items():
+        p = out / f"queries_{k}.parquet"
+        if p.exists():
+            raise FileExistsError(f"{p} exists")
+        f.to_parquet(p, index=False)
+        paths.append(p)
+    fpath = out / "forward.pkl"
+    if fpath.exists():
+        raise FileExistsError(f"{fpath} exists")
+    with open(fpath, "wb") as fh:
+        pickle.dump({"table": table, "zero": zero, "strata_counts": counts}, fh)
+    res.update(table=json_records(table), zero=zero, strata_counts=counts, outputs=file_digests([fpath, *paths]))
+    res["passed"] = res["probe"]["ok"] and all(c["identical"] for c in res["checks"])
+    ctx_result(res, strict=True)
+
+
+def flagged_catchers(scores: pd.DataFrame, pitches_path: Path, year: int) -> pd.DataFrame:
+    """§2: the catchers of the flagged clubs (documented practice or possible exposure) in the season, labeled."""
+    lv = pd.read_parquet(pitches_path, columns=["season", "pa_id", "pitch_number", "dugout_level"])
+    s = scores.merge(lv, on=KEYS, how="left", validate="one_to_one")
+    s = s[(s["season"] == year) & s["dugout_level"].notna()]
+    if not len(s):
+        return pd.DataFrame(columns=["catcher", "fielding_team", "dugout_level", "pitches", "games"])
+    return s.groupby(["catcher", "fielding_team", "dugout_level"]).agg(
+        pitches=("game_pk", "size"), games=("game_pk", "nunique")).reset_index().sort_values(
+        ["fielding_team", "pitches"], ascending=[True, False]).reset_index(drop=True)
+
+
 SEASON_STAGE_FUNCS = {"extract": stage_extract, "build": stage_build, "checks": stage_checks, "run": stage_run,
                       "halves": stage_halves, "validate": stage_validate, "report": stage_report,
-                      "prefetch": stage_prefetch}
+                      "prefetch": stage_prefetch, "reconcile": stage_reconcile, "reconcile2": stage_reconcile2,
+                      "publish": stage_publish, "forward": stage_forward}
 CONTEXTS.update({"season_run": ctx_season_run, "season_halves": ctx_season_halves,
-                 "season_validate": ctx_season_validate})
+                 "season_validate": ctx_season_validate, "season_forward": ctx_season_forward})
 
 
 # ===================================================================================== selftest (synthetic only)
@@ -3473,6 +4391,222 @@ def selftest_results() -> list:
     case("R3b rows are relabeled and keep the common-set rules",
          set(r3b["check"]) == {"R3b_D", "R3b_A"} and int(r3b.loc[r3b["check"] == "R3b_D", "n"].iloc[0]) <= 14)
     out.extend(selftest_phase2())
+    out.extend(selftest_phase3())
+    return out
+
+
+def selftest_phase3() -> list:
+    """Phase 3 (synthetic only): §7's fallbacks against values computed from the formulas (not with predict), the
+    acquisition outcome's precedence, 2026's stage chain, the forward table and the eligible key set."""
+    out = []
+
+    def case(name, ok):
+        out.append({"case": name, "ok": bool(ok)})
+    from gamecalling import batter as bt
+    from gamecalling import runners as rn
+    rng = np.random.default_rng(20261122)
+    K, KC = models.N_OUTCOMES, models.N_BINS
+
+    def counts(df, keys, k):          # independent of models._counts: plain dictionary counting, unit weights
+        d = {}
+        for row in df[list(keys) + ["y"]].itertuples(index=False):
+            key = tuple(row[:-1])
+            d.setdefault(key, np.zeros(k))[int(row[-1])] += 1.0
+        return d
+
+    def post(n, m, a):                # the posterior mean, written out
+        return (n + a * m) / (n.sum() + a)
+    n = 900
+    tr = pd.DataFrame({"pitcher": rng.choice([1, 2], n), "action": rng.choice(["FF", "SL"], n),
+                       "stand": rng.choice(["L", "R"], n), "cidx": rng.choice([0, 1, 2], n), "y": rng.integers(0, K, n)})
+    drop = (tr["pitcher"] == 1) & (tr["action"] == "SL") & (tr["stand"] == "R") & (tr["cidx"] == 2)
+    cu = pd.DataFrame({"pitcher": 2, "action": "CU", "stand": "R", "cidx": rng.choice([0, 1, 2], 60),
+                       "y": rng.integers(0, K, 60)})
+    tr = pd.concat([tr[~drop], cu], ignore_index=True).assign(w=1.0, w_hyper=1.0).reset_index(drop=True)
+    po = models.fit_pooled(tr, models.OUTCOME_LEVELS, K)
+    c0, c1, c2 = counts(tr, ("stand", "cidx"), K), counts(tr, ("action", "stand", "cidx"), K), \
+        counts(tr, ("pitcher", "action", "stand", "cidx"), K)
+
+    def p0_out(p, a, s_, c):
+        base = (c0[s_, c] + models.BASE_PSEUDO) / (c0[s_, c].sum() + K * models.BASE_PSEUDO)
+        lg = post(c1.get((a, s_, c), np.zeros(K)), base, po.alpha_league)
+        return base, lg, post(c2.get((p, a, s_, c), np.zeros(K)), lg, po.alpha_cell)
+    q = pd.DataFrame({"pitcher": [1, 1, 99, 2, 2], "action": ["SL", "FF", "FF", "KN", "CU"],
+                      "stand": ["R", "L", "L", "L", "L"], "cidx": [2, 1, 0, 1, 1]})
+    pr = po.predict(q)
+    e = [p0_out(*r) for r in q.itertuples(index=False)]
+    case("§7 P0 outcome: seen pair with the finer cell missing gives the league mean (formula)",
+         np.allclose(pr[0], e[0][1], rtol=0, atol=1e-12) and not (1, "SL", "R", 2) in c2)
+    case("§7 P0 outcome: a seen cell gives the cell posterior (formula)", np.allclose(pr[1], e[1][2], rtol=0, atol=1e-12))
+    case("§7 P0 outcome: an unseen pitcher gives the league mean (formula)", np.allclose(pr[2], e[2][1], rtol=0, atol=1e-12))
+    case("§7 P0 outcome: an action never seen gives the base (hand x count) (formula)",
+         np.allclose(pr[3], e[3][0], rtol=0, atol=1e-12))
+    case("§7 P0 outcome: a seen action whose league cell is empty falls back to the base (formula; protocol note)",
+         ("CU", "L", 1) not in c1 and any(k[0] == "CU" for k in c1) and np.allclose(pr[4], e[4][0], rtol=0, atol=1e-12))
+
+    def raises(fn, *a):
+        try:
+            fn(*a)
+            return False
+        except ValueError:
+            return True
+    case("§7 P0 outcome: a hand or a count outside the base table raises",
+         raises(po.predict, q.iloc[:1].assign(stand="S")) and raises(po.predict, q.iloc[:1].assign(cidx=11)))
+    # contact: P0 and the C1 runner offset
+    ct = pd.DataFrame({"pitcher": rng.choice([1, 2], n), "action": rng.choice(["FF", "SL"], n),
+                       "stand": rng.choice(["L", "R"], n), "runners_on": rng.choice([0, 1], n), "y": rng.integers(0, KC, n)})
+    keep = ~((ct["pitcher"] == 1) & (ct["action"] == "SL") & (ct["stand"] == "R"))       # seen pair, hand R has no BIP
+    keep &= ~((ct["pitcher"] == 1) & (ct["action"] == "FF") & (ct["stand"] == "L") & (ct["runners_on"] == 1))
+    cuc = pd.DataFrame({"pitcher": 2, "action": "CU", "stand": "R", "runners_on": rng.choice([0, 1], 60),
+                        "y": rng.integers(0, KC, 60)})
+    ct = pd.concat([ct[keep], cuc], ignore_index=True).assign(w=1.0, w_hyper=1.0).reset_index(drop=True)
+    pc = models.fit_pooled(ct, models.CONTACT_LEVELS, KC)
+    rm = rn.fit_runner_pooled(ct, models.CONTACT_LEVELS, KC)
+    k0, k1, k2 = counts(ct, ("stand",), KC), counts(ct, ("action", "stand"), KC), counts(ct, ("pitcher", "action", "stand"), KC)
+    r1, r2 = counts(ct, ("action", "stand", "runners_on"), KC), counts(ct, ("pitcher", "action", "stand", "runners_on"), KC)
+
+    def p0_con(model, p, a, s_):
+        base = (k0[(s_,)] + models.BASE_PSEUDO) / (k0[(s_,)].sum() + KC * models.BASE_PSEUDO)
+        lg = post(k1.get((a, s_), np.zeros(KC)), base, model.alpha_league)
+        return base, lg, post(k2.get((p, a, s_), np.zeros(KC)), lg, model.alpha_cell)
+
+    def c1_con(p, a, s_, r):
+        base, L, P = p0_con(rm.p0, p, a, s_)
+        Lr = post(r1.get((a, s_, r), np.zeros(KC)), L, rm.alpha_league_r)
+        m = P * Lr / L
+        m = m / m.sum()
+        return base, L, P, Lr, m, post(r2.get((p, a, s_, r), np.zeros(KC)), m, rm.alpha_r)
+    qc = pd.DataFrame({"pitcher": [1, 99, 1, 2, 2], "action": ["SL", "FF", "FF", "KN", "CU"],
+                       "stand": ["R", "L", "L", "R", "L"], "runners_on": [0, 1, 1, 0, 1]})
+    pp, pr_ = pc.predict(qc), rm.predict(qc)
+    ec = [p0_con(pc, p, a, s_) for p, a, s_, _ in qc.itertuples(index=False)]
+    er = [c1_con(*r) for r in qc.itertuples(index=False)]
+    case("§7 P0 contact: a seen pair whose hand has no 2025 balls in play gives the league mean (formula)",
+         np.allclose(pp[0], ec[0][1], rtol=0, atol=1e-12))
+    case("§7 P0 contact: unseen pitcher -> league mean; action never seen -> base; seen action, empty league cell -> "
+         "base; a hand outside the base table raises (formula)",
+         np.allclose(pp[1], ec[1][1], rtol=0, atol=1e-12) and np.allclose(pp[3], ec[3][0], rtol=0, atol=1e-12)
+         and ("CU", "L") not in k1 and np.allclose(pp[4], ec[4][0], rtol=0, atol=1e-12)
+         and raises(pc.predict, qc.iloc[:1].assign(stand="S")))
+    case("§7 C1 contact: missing hand -> P0 cell = L, offset = normalized L_r (formula)",
+         np.allclose(er[0][2], er[0][1], rtol=0, atol=1e-12) and np.allclose(pr_[0], er[0][3] / er[0][3].sum(), rtol=0,
+                                                                            atol=1e-12))
+    case("§7 C1 contact: unseen pitcher -> offset = normalized L_r for that runner state (formula)",
+         np.allclose(pr_[1], er[1][3] / er[1][3].sum(), rtol=0, atol=1e-12))
+    case("§7 C1 contact: hand present, runner state missing -> offset = normalized P0_cell x L_r / L (formula)",
+         (1, "FF", "L", 1) not in r2 and np.allclose(pr_[2], er[2][4], rtol=0, atol=1e-12))
+    case("§7 C1 contact: an action never seen -> L = base, L_r = L, offset = base (formula)",
+         np.allclose(pr_[3], er[3][0], rtol=0, atol=1e-12))
+    case("§7 C1 contact: a seen action whose league cell is empty -> L_r = L = base, offset = base (formula)",
+         ("CU", "L", 1) not in r1 and np.allclose(er[4][3], er[4][0], rtol=0, atol=1e-12)
+         and np.allclose(pr_[4], er[4][0], rtol=0, atol=1e-12))
+    # C1 outcome: the P0 offset, then the batter adjustment; an unseen batter gets the standardized league values
+    F = bt.Features(batters=pd.Index([1, 2]), totals=np.ones((2, len(bt.STAT_COLUMNS))),
+                    game_index=pd.MultiIndex.from_tuples([(1, 1)]), game_stats=np.zeros((1, len(bt.STAT_COLUMNS))),
+                    whiff=bt.BetaBinomial(0.25, 50.0), chase=bt.BetaBinomial(0.3, 40.0),
+                    xw=bt.NormalNormal(0.37, 0.01, 0.002), mean=np.array([0.2, 0.25, 0.35]), sd=np.array([0.05, 0.06, 0.04]))
+    z_ind = np.array([(0.25 - 0.2) / 0.05, (0.3 - 0.25) / 0.06, (0.37 - 0.35) / 0.04])
+    case("§7 C1: an unseen batter gets the standardized league feature values (nonzero; formula)",
+         np.allclose(F.z_full([999])[0], z_ind, rtol=0, atol=1e-12) and np.abs(z_ind).min() > 0)
+    theta = rng.normal(0, 0.1, (3, K - 1))
+    bm = bt.BatterModel("M3a", "outcome", po, F, theta, 1.0, {}, 0, 0, 0, [])
+    qb = q.iloc[:3].assign(batter=[999, 999, 999])
+    eta = np.log(np.vstack([e[i][2] for i in range(3)])) + np.tile(z_ind, (3, 1)) @ theta @ bt.helmert(K).T
+    sm = np.exp(eta - eta.max(axis=1, keepdims=True))
+    case("§7 C1 outcome: the P0 offset (league mean for an unseen pitcher), then the batter adjustment",
+         np.allclose(bm.predict(qb), sm / sm.sum(axis=1, keepdims=True), rtol=0, atol=1e-12))
+    Fg = bt.Features(batters=pd.Index([1, 2]), totals=np.ones((2, len(bt.STAT_COLUMNS) + 1)),
+                     game_index=pd.MultiIndex.from_tuples([(1, 1)]), game_stats=np.zeros((1, len(bt.STAT_COLUMNS) + 1)),
+                     whiff=bt.BetaBinomial(0.25, 50.0), chase=bt.BetaBinomial(0.3, 40.0),
+                     xw=bt.NormalNormal(0.37, 0.01, 0.002), mean=np.array([0.2, 0.25, 0.35, 0.4]),
+                     sd=np.array([0.05, 0.06, 0.04, 0.08]), gb=bt.BetaBinomial(0.44, 30.0))
+    zg = np.append(z_ind, (0.44 - 0.4) / 0.08)
+    thg = rng.normal(0, 0.1, (4, KC - 1))
+    bc = bt.BatterModel("C1", "contact", rm, Fg, thg, 1.0, {}, 0, 0, 0, [])
+    qcb = qc.assign(batter=999)
+    etag = np.log(np.vstack([er[i][5] for i in range(len(qc))])) + np.tile(zg, (len(qc), 1)) @ thg @ bt.helmert(KC).T
+    smg = np.exp(etag - etag.max(axis=1, keepdims=True))
+    case("§7 C1 contact: runner offset (formula) then the batter adjustment with the ground-ball feature; unseen batter",
+         np.allclose(Fg.z_full([999])[0], zg, rtol=0, atol=1e-12)
+         and np.allclose(bc.predict(qcb), smg / smg.sum(axis=1, keepdims=True), rtol=0, atol=1e-12))
+    # acquisition precedence (§8.2 step 5)
+    ok = {"duplicate_statcast_keys": 0, "unexpected_statcast_games": [], "feed_stop": [], "score_unexplained": [],
+          "unavailable": [], "missing_games": [], "key_mismatch": []}
+    case("§8.2: integrity stops first; the first attempt asks for the refetch; then blocked > defer > pass",
+         acquisition_outcome(1, ["conflicting pitch keys"], ["2026-04-01"], ok, []) == "stop: data integrity"
+         and acquisition_outcome(1, [], ["2026-04-01"], {**ok, "missing_games": [5]}, []) == "refetch required"
+         and acquisition_outcome(2, [], [], {**ok, "missing_games": [5]}, []).startswith("defer")
+         and acquisition_outcome(2, [], [], {**ok, "missing_games": [5], "feed_stop": [1]}, []) == "blocked for review"
+         and acquisition_outcome(2, [], [], ok, ["2026-05-01"]).startswith("defer")
+         and acquisition_outcome(1, [], [], ok, []) == "pass" and acquisition_outcome(2, [], [], ok, []) == "pass"
+         and acquisition_outcome(2, [], [], {**ok, "unexpected_statcast_games": [9]}, []) == "stop: data integrity"
+         and acquisition_outcome(1, [], ["2026-04-01"], {**ok, "feed_stop": [{"game_pk": 5}],
+                                                         "missing_games": [6]}, []) == "blocked for review")
+    fin, pst = {"detailedState": "Final"}, {"detailedState": "Postponed"}
+    sch = {"dates": [{"date": "2026-04-01", "games": [{"gamePk": 7, "status": fin}, {"gamePk": 8, "status": fin}]},
+                     {"date": "2026-04-02", "games": [{"gamePk": 7, "status": fin}, {"gamePk": 9, "status": pst}]},
+                     {"date": "2026-04-03", "games": [{"gamePk": 9, "status": fin}]}]}
+    case("§8.2: a suspended game maps to every date it was played; a postponed entry is not a played date (Neon)",
+         game_dates(sch) == {7: {"2026-04-01", "2026-04-02"}, 8: {"2026-04-01"}, 9: {"2026-04-03"}})
+    sus = {"dates": [{"date": "2026-05-21", "games": [{"gamePk": 10, "status": fin, "officialDate": "2026-05-21"}]},
+                     {"date": "2026-05-22", "games": [{"gamePk": 10, "status": fin, "officialDate": "2026-05-21"}]}]}
+    case("§8.2 (rev 10c): a suspended game finished the next day maps to its official date only (Savant's day)",
+         game_dates(sus) == {10: {"2026-05-21"}})
+    win = {"first": "2026-04-01", "last": "2026-04-05"}
+    meta_ = {"2026-04-01": {"rows": 10}, "2026-04-02": {"rows": 0}, "2026-04-03": {"rows": 25000, "capped": True},
+             "2026-04-04": {"rows": 5}, "2026-04-05": {"rows": 0}}
+    rv = recoverable_days(win, meta_, ["2026-04-01", "2026-04-02", "2026-04-04", "2026-04-07"], ["2026-04-04", "2026-04-09"])
+    case("§8.2 (rev 10c, Astra): recoverable days against the explicit window: empty played days, every capped day of "
+         "the window, missing-game dates inside it; played dates outside it listed apart",
+         rv["refetch"] == ["2026-04-02", "2026-04-03", "2026-04-04"] and rv["outside"] == ["2026-04-07"]
+         and rv["capped"] == ["2026-04-03"] and rv["empty"] == ["2026-04-02"])
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        d_ = Path(td)
+        (d_ / "a.csv").write_text("x\n1\n")
+        man = {"a.csv": sha(d_ / "a.csv")}
+        ok_snap = verify_snapshot(d_, man) == []
+        (d_ / "a.csv").write_text("x\n2\n")
+        case("§8.2 (rev 10c, Astra): a changed snapshot file is caught before the build",
+             ok_snap and verify_snapshot(d_, man) == ["changed a.csv"]
+             and "missing b.csv" in verify_snapshot(d_, {**man, "b.csv": "0"}))
+    if not SMOKE:
+        fp, bp_ = expected_predecessors("forward_2026"), expected_predecessors("build_2026")
+        case("phase 3 chain: 2026 publishes (not extracts); its run stages name the Stage C authorization",
+             "authorize_run_2026" in fp and "checks_2026" in fp and "publish_2026" in bp_
+             and expected_predecessors("build_2023") == {"guard", "authorize_2023", "extract_2023"}
+             and "authorize_run_2026" in expected_predecessors("report_2026") and raw_stage(2026) == "publish"
+             and raw_stage(2023) == "extract" and acquired(2026) and not acquired(2023) and not acquired(2024))
+    # forward table: +inf for an exact criterion zero; strata under 10 rows get log loss and n only
+    keys = pd.DataFrame({"season": 2026, "pa_id": np.arange(12), "pitch_number": 1})
+    base_f = keys.assign(fold=-1, y=np.arange(12) % 2, p0=0.4, p1=0.6)
+    crit = base_f.copy()
+    crit.loc[0, ["p0", "p1"]] = [0.0, 1.0]
+    st = keys.assign(**{s_: False for s_ in FORWARD_STRATA})
+    st.loc[:2, "unseen_pitcher"] = True
+    tab, z = forward_table("contact", {"P0": base_f, "C1": base_f.copy(), "criterion": crit, "league": base_f.copy()}, st)
+    allrow, up = tab[tab["stratum"] == "all"].iloc[0], tab[tab["stratum"] == "unseen_pitcher"].iloc[0]
+    emp = tab[tab["stratum"] == "seen_cell"].iloc[0]
+    case("§6 row 10: an exact criterion zero gives +inf and is disclosed; a stratum under 10 (empty included) gets no "
+         "calibration, labeled",
+         math.isinf(allrow["criterion_baseline"]) and z["zero_probability_rows"] == 1 and up["n"] == 3
+         and str(up["max_cal_P0"]).startswith("not computed") and not isinstance(allrow["max_cal_P0"], str)
+         and int(emp["n"]) == 0 and str(emp["max_cal_criterion"]).startswith("not computed") and math.isnan(emp["P0"])
+         and z["breakdown"] == [{"y": 0, "class": f"bin_{payoff.CONTACT_BINS[0]}", "rows": 1}])
+    stray = pd.concat([st, st.iloc[:1].assign(pa_id=999)], ignore_index=True)
+    try:
+        forward_table("contact", {"P0": base_f, "C1": base_f.copy(), "criterion": crit, "league": base_f.copy()}, stray)
+        stray_refused = False
+    except ValueError:
+        stray_refused = True
+    case("§6 row 10 (rev 10c, Astra): a stratum key no frame covers is refused, not silently skipped", stray_refused)
+    pt = pd.DataFrame({"season": 2026, "pa_id": [1, 2, 3], "pitch_number": 1, "outcome_fit_eligible": [True, False, True],
+                       "contact_fit_eligible": [True, False, False], "outcome": ["ball", "ball", "in_play"],
+                       "contact_bin": [3, 1, 1], "in_eligible_set": [True, True, False]})   # 3: out of arsenal, kept
+    eo, ec_ = eligible_keys(pt, 2026, "outcome"), eligible_keys(pt, 2026, "contact")
+    case("§7: the eligible key set and classes come from the pitch table's flags",
+         list(eo["pa_id"]) == [1, 3] and list(eo["y"]) == [models.OUTCOME_CODE["ball"], models.OUTCOME_CODE["in_play"]]
+         and list(ec_["pa_id"]) == [1] and list(ec_["y"]) == [2])
     return out
 
 
@@ -3518,6 +4652,11 @@ def selftest_phase2() -> list:
          and validate_binding({**b, "season": 2024})[0].startswith("binding stage"))
     canon = {k: str(SEASONS_ROOT / "2023" / f"{k}.parquet") for k in ("raw", "pitches", "pas", "support")}
     good = {**b, **canon, "out": str(SEASONS_ROOT / "2023" / "run"), "models_dir": str(SEASONS_ROOT / "2023" / "run" / "models")}
+    fgood = {**good, "out": str(SEASONS_ROOT / "2023" / "forward"), "models_dir": str(SEASONS_ROOT / "2023" / "forward" / "models"),
+             "stage": "forward_2023"}
+    case("binding (rev 10, Neon): season_forward binds to its own forward stage; under run it is refused",
+         not any(x.startswith("binding stage") or x.startswith("context") for x in validate_binding(fgood, "season_forward"))
+         and validate_binding(good, "season_forward")[0].startswith("context"))
     case("binding: a context dispatched under another stage is refused (Astra)",
          validate_binding(good, "season_halves")[0].startswith("context") and
          validate_binding({**good, "stage": "control"}, "season_run")[0].startswith("context"))
@@ -3535,8 +4674,10 @@ def selftest_phase2() -> list:
         case("season gating (smoke): only the development stand-in is allowed",
              refuses(season_info, 2023) and refuses(season_info, 2026) and season_info(SMOKE_STANDIN)["source"] == ORIG["raw"])
     else:
-        case("season gating: 2026 and development seasons are refused in phase 2",
-             refuses(season_info, 2026) and refuses(season_info, 2024) and season_info(2023)["source"] == RAW_2015_2023)
+        case("season gating (rev 10): development seasons are refused; 2023 extracts, 2026 publishes, with two authorizations",
+             refuses(season_info, 2024) and refuses(season_info, 2025) and season_info(2023)["source"] == RAW_2015_2023
+             and season_info(2026)["source"] == SEASONS_ROOT / "2026" / "raw.parquet"
+             and season_info(2026)["run_authorization"] == "Stage C (A5)" and season_info(2026)["authorization"] == "A11-4")
     case("authorization date: strict YYYY-MM-DD, not before the lock, not in the future",
          valid_authorization_date(PROTOCOL_LOCKED_ON) and not valid_authorization_date("2026-11-20")
          and not valid_authorization_date("2099-01-01") and not valid_authorization_date("2026-11-2x")
@@ -3585,12 +4726,24 @@ def selftest_phase2() -> list:
          nonpitch_runs_after_last_pitch(out_) == (0, 0) and nonpitch_runs_after_last_pitch(noflag) == (0, 0))
     # small mover groups are listed with both estimates and the change
     eff = pd.DataFrame({"y0": [1.0, 2.0, 3.0], "y1": [1.5, 2.0, 2.0], "w": 1.0}, index=[10, 11, 12])
-    rep_ = {"eligible": [10, 11, 12], "effects": {("D", "random"): eff, ("A", "random"): eff}}
+    rep_ = {"eligible": [10, 11, 12], "effects": {("D", "random"): eff, ("A", "random"): eff},
+            "table": pd.DataFrame({"score": ["D", "A"], "model": ["random", "random"], "pearson": [0.1, 0.2]})}
     mv_ = pd.DataFrame({"group": ["mover", "non_mover", "non_mover"]}, index=[10, 11, 12])
     sg = small_group_listing(rep_, mv_)
-    case("pairs: groups under 10 list every catcher with both estimates and the change",
+    chg = lambda c_: float(sg[(sg["catcher"] == c_) & (sg["score"] == "D")]["change_centered"].iloc[0])  # noqa: E731
+    case("pairs (rev 10): groups under 10 list every catcher, the change centered on the listed group's means (Astra)",
          len(sg) == 6 and set(sg["group"]) == {"mover", "non_mover"}
-         and float(sg[(sg["catcher"] == 10) & (sg["score"] == "D")]["change"].iloc[0]) == 0.5)
+         and chg(10) == 0.0 and chg(11) == 0.5 and chg(12) == -0.5)
+    gw = group_weighted_pearson(rep_, mv_)
+    case("pairs (rev 10): the weighted Pearson by mover group lists groups under 10",
+         len(gw) == 6 and all(str(v).startswith("listed") for v in gw["weighted_pearson"]))
+    big = pd.DataFrame({"y0": np.arange(12.0), "y1": np.arange(12.0)[::-1], "w": 1.0}, index=range(100, 112))
+    rz = {"eligible": list(big.index), "effects": {("D", "random"): big, ("A", "random"): big},
+          "table": pd.DataFrame({"score": ["D", "A"], "model": ["random", "random"], "pearson": [vp.UNDEFINED, -1.0]})}
+    gz = group_weighted_pearson(rz, pd.DataFrame({"group": "mover"}, index=big.index))
+    gzm = gz[gz["group"] == "mover"].set_index("score")["weighted_pearson"]
+    case("pairs (rev 10c, Astra): a zero-variance fit leaves the group's weighted Pearson undefined even at n >= 10",
+         gzm["D"] == vp.UNDEFINED and abs(float(gzm["A"]) + 1.0) < 1e-12)
     base = {"duplicate_statcast_keys": 0, "unexpected_statcast_games": [], "feed_stop": [], "score_unexplained": [],
             "unavailable": [], "missing_games": [], "key_mismatch": []}
     miss = {"n_missing": 1, "n_extra": 0}
@@ -3780,7 +4933,11 @@ if __name__ == "__main__":
         SEASON_STAGE_FUNCS[sys.argv[1]](int(sys.argv[2]))
     elif len(sys.argv) == 4 and sys.argv[1] == "authorize" and sys.argv[2].isdigit():
         stage_authorize(int(sys.argv[2]), sys.argv[3])
+    elif len(sys.argv) == 4 and sys.argv[1] == "authorize-run" and sys.argv[2].isdigit():
+        stage_authorize_run(int(sys.argv[2]), sys.argv[3])
     else:
         sys.exit(f"usage: python3.12 s9_seasons.py {{{'|'.join(STAGES)}}}\n"
                  f"       python3.12 s9_seasons.py {{{'|'.join(SEASON_STAGE_FUNCS)}}} <year>\n"
-                 f"       python3.12 s9_seasons.py authorize <year> <YYYY-MM-DD>   (only on the user's instruction)")
+                 f"       python3.12 s9_seasons.py authorize <year> <YYYY-MM-DD>   (only on the user's instruction)\n"
+                 f"       python3.12 s9_seasons.py authorize-run 2026 <YYYY-MM-DD>   (Stage C; only on the user's "
+                 f"instruction)")
