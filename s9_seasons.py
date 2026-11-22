@@ -57,6 +57,9 @@ then
     python3.12 s9_seasons.py reconcile 2026       # once: §8.2 step 3 on the cached days; lists any refetch days
     (one documented refetch: the command the reconcile record prints), then
     python3.12 s9_seasons.py reconcile2 2026      # once, only after a refetch: step 5's decision
+    or, if the first reconciliation is blocked for review only by feed-vocabulary events (revision 10d):
+    python3.12 s9_seasons.py approve-exception 2026 <date>   # only on the user's instruction: EXCEPTION_RULE
+    python3.12 s9_seasons.py reconcile_reviewed 2026         # once: the same snapshot, every event verified by the rule
     python3.12 s9_seasons.py publish 2026         # once: the downloader's build, the reference schema -> raw.parquet
     python3.12 s9_seasons.py build 2026; checks 2026
 After the separate Stage C authorization (`authorize-run 2026 <date>`, only on the user's instruction):
@@ -199,7 +202,20 @@ RECORD_IDS = {"alphas": ("season", "fold"), "policy_alphas": ("season", "scoring
 # records (guard, audit, control, gate_v<MAPPING_VERSION>, domains): revision 7's final digest, set when it is committed.
 APPROVED_PREDECESSOR_SCRIPTS = frozenset({"080ac1996b03c8da17a6e1cd76bed80b4df99364b428f21b7ece080c65ce846c",
                                          # revision 9 (d07c31f): domains and the 2023 records
-                                         "b7df0294683c373cd73c82eb93f7ecbf8ad150d52ca7c565af37b819fb065a10"})
+                                         "b7df0294683c373cd73c82eb93f7ecbf8ad150d52ca7c565af37b819fb065a10",
+                                         # revision 10c (e9aa410): authorize_2026 (and the blocked reconcile_2026)
+                                         "536bdc4337c712c29754df88bcb75dbd89e69ffd2511eb857c32fb30de3f1153"})
+# The user's feed-exception rule (2026-11-22). reconcile_2026 was blocked for review on one event outside the
+# development vocabulary: a swinging pitchout (MLB call code Q) for strike three with a passed ball, game 824606. The
+# user approved accepting every such pitch once verified, as a known baseball situation. The rule is applied, never a
+# list: each event is verified in both sources by exception_evidence, in reconcile_reviewed and again in checks; any
+# other new signature, any failed condition and any unrecognized kept no-pitch event still stops. It is active only on a
+# season with a verified exception_approval record (written on the user's instruction).
+EXCEPTION_RULE = {"id": "swinging-strikeout-passed-ball-v1", "approved_by": "the user", "approved_on": "2026-11-22",
+                  "text": "A pitch whose play-by-play signature is outside the development vocabulary is accepted only "
+                          "if MLB's play-by-play and Statcast both show strike three on a swing that ends the plate "
+                          "appearance in a strikeout, with a passed ball charged to the catcher on the same pitch. Its "
+                          "Statcast row is kept unchanged (§5 B0: its description is accepted at that key only)."}
 # Protocol amendment 1 (approved by the user 2026-11-22, after the first production control failed at C1 on this): the stored
 # arsenal_support.parquet was written by Phase 0 on 2026-10-27 under ca9d25c, whose support_table counted rows with
 # .size() (int64). Commit 483d573 (2026-10-29) added unit weights (weighting.w, float), so the frozen package's
@@ -991,6 +1007,9 @@ def expected_predecessors(stage: str):
         return {"authorize": {"guard"}, "authorize_run": {"guard", a},
                 "reconcile": {"guard", "audit", "control", gate, "domains", a},
                 "reconcile2": {"guard", a, f"reconcile_{y}"},
+                # the blocked first reconciliation failed, so it is pinned by the approval's digest, not as a predecessor
+                "exception_approval": {"guard", a},
+                "reconcile_reviewed": {"guard", "audit", "control", gate, "domains", a, f"exception_approval_{y}"},
                 "publish": {"guard", a, last_reconcile(int(y))},
                 "build": {"guard", a, f"publish_{y}"},
                 "checks": {"guard", a, f"build_{y}", "domains", gate},
@@ -1040,7 +1059,32 @@ def record_problems(stage: str, rec: dict, ident: dict) -> list:
             p.append(f"its predecessor {name} changed")
     if stage == "guard" and not isinstance(rec.get("inventory"), dict):
         p.append("guard record has no inventory")
-    return p
+    return p + answer_problems(stage, rec)
+
+
+ANSWER_STAGES = ("exception_approval", "reconcile_reviewed")
+
+
+def answer_problems(stage: str, rec: dict) -> list:
+    """exception_approval_<y> and reconcile_reviewed_<y> answer a FAILED record, which cannot be a predecessor; its
+    digest is a required link checked wherever these records are read (record_problems: preconditions, publish via
+    last_reconcile, recheck; chain_problems: every stage downstream). The answered record must exist at the pinned
+    digest and still be a block the rule can answer (Astra)."""
+    name, _, y = stage.rpartition("_")
+    if name not in ANSWER_STAGES or not y.isdigit():
+        return []
+    a = (rec.get("result") or {}).get("answers")
+    if not isinstance(a, dict) or a.get("record") != f"reconcile_{y}":
+        return [f"answers does not name reconcile_{y}"]
+    q = record_path(a["record"])
+    if not q.exists() or sha(q) != a.get("sha256"):
+        return [f"the answered record {a['record']} is missing or not at the pinned digest"]
+    first, bad = blocked_reconcile(int(y))
+    out = [f"the answered record: {x}" for x in bad]
+    if first is not None:       # both answer stages carry the approval's per-game evidence (Astra)
+        out += [f"evidence: {x}" for x in feed_signature_problems(
+            a.get("games"), ((first.get("result") or {}).get("completeness") or {}).get("feed_stop"))]
+    return out
 
 
 def inventory() -> list:
@@ -1102,6 +1146,11 @@ def chain_problems(stage: str, path_of=None, seen=None) -> list:
     if err:
         return [f"{stage}: {err}"]
     out = []
+    ans = (rec.get("result") or {}).get("answers") if isinstance(rec.get("result"), dict) else None
+    if isinstance(ans, dict) and "record" in ans:      # a pinned failed record (revision 10d): the link must hold
+        q = path_of(ans["record"])
+        if not q.exists() or sha(q) != ans.get("sha256"):
+            out.append(f"{stage} answers {ans['record']} at another digest (or it is missing)")
     preds = rec.get("predecessors")
     for name, h in (preds.items() if isinstance(preds, dict) else []):
         q = path_of(name)
@@ -2322,19 +2371,27 @@ def terminal_mask(r: pd.DataFrame) -> pd.Series:
     return r.groupby(["game_pk", "at_bat_number"])["pitch_number"].transform("max").eq(r["pitch_number"])
 
 
-def b0_inventory(raw: pd.DataFrame, dom: dict) -> dict:
+def b0_inventory(raw: pd.DataFrame, dom: dict, excepted_keys=frozenset()) -> dict:
     """§5 B0 on the whole raw extract (game types; attach_bb_type's preconditions) and on its regular-season rows
-    (closed domains; null counts by position, reported without a rule)."""
+    (closed domains; null counts by position, reported without a rule). `excepted_keys`: the (game_pk, at_bat_number,
+    pitch_number) keys EXCEPTION_RULE verified in this stage's completeness check; a description outside the domain at
+    one of them is kept unchanged and listed under description_exceptions, never anywhere else (revision 10d)."""
     out = {"game_type": {str(k): int(v) for k, v in raw["game_type"].value_counts(dropna=False).items()}}
     out["duplicate_keys_whole_file"] = int(raw.duplicated(batter.BB_KEYS).sum())
     out["bb_type_outside_labels_whole_file"] = sorted(map(str, set(raw["bb_type"].dropna().unique()) - set(batter.BB_TYPES)))
     r = raw[raw["game_type"] == "R"]
     term = terminal_mask(r)
+    exc = pd.MultiIndex.from_frame(r[["game_pk", "at_bat_number", "pitch_number"]].astype("int64")).isin(
+        [tuple(map(int, k)) for k in excepted_keys]) if len(excepted_keys) and len(r) else np.zeros(len(r), bool)
     viol = {}
     for col in ("description", "bb_type", "stand", "p_throws", "inning_topbot"):
-        extra = sorted(set(r[col].dropna().unique()) - set(dom[col]))
+        rc = r.loc[~exc, col] if col == "description" else r[col]
+        extra = sorted(set(rc.dropna().unique()) - set(dom[col]))
         if extra:
-            viol[col] = {str(v): int(r[col].eq(v).sum()) for v in extra}
+            viol[col] = {str(v): int(rc.eq(v).sum()) for v in extra}
+    de = r.loc[exc & ~r["description"].isin(dom["description"]).to_numpy()]
+    out["description_exceptions"] = de[["game_pk", "at_bat_number", "pitch_number", "description"]].astype(
+        {"game_pk": "int64", "at_bat_number": "int64", "pitch_number": "int64", "description": "object"}).to_dict("records")
     ev = set(r["events"].dropna().unique())
     code_only = sorted((ev - set(dom["events_dev"])) & set(dom["events_code"]))
     ev_bad = sorted(ev - set(dom["events_dev"]) - set(dom["events_code"]))
@@ -2475,6 +2532,134 @@ def comparison_tables(year: int, label: str, pitches, pas, dev_p, dev_a) -> dict
             "terminal": pd.DataFrame([{"sample": k, **env[k]["terminal"]} for k in env])}
 
 
+def _num_is(v, k: int) -> bool:
+    """v is a real number exactly equal to k (no bool, no string, no NaN; 2.5 is not 2)."""
+    return isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, (bool, np.bool_)) \
+        and bool(pd.notna(v)) and float(v) == float(k)
+
+
+def exception_evidence(play: dict, j: int, rows) -> tuple:
+    """EXCEPTION_RULE on one play event (list position j of the play) and the game's Statcast rows: (ok, evidence).
+    Every condition must hold in both sources, and conflicting evidence fails closed (Astra): the event's explicit MLB
+    index must equal j and be unique in the play, and the passed ball must name that index; Statcast's description
+    must be a swinging label (its first token "swinging") and its strikes exactly 2. The evidence keeps every value
+    read and lists each failed condition."""
+    evs = play.get("playEvents") or []
+    e = evs[j] if 0 <= j < len(evs) else {}
+    d = e.get("details") or {}
+    call = d.get("call") or {}
+    res = play.get("result") or {}
+    idx = e.get("index")
+    explicit = isinstance(idx, int) and not isinstance(idx, bool) and idx == j and \
+        [i for i, x in enumerate(evs) if x.get("index") == idx] == [j]
+    kidx = [i for i, x in enumerate(evs) if kept(x)]
+    ab = int(play["about"]["atBatIndex"]) + 1
+    n = kidx.index(j) + 1 if j in kidx else None
+    pb_idx = [(x.get("details") or {}).get("playIndex") for x in play.get("runners") or []
+              if isinstance(x, dict) and (x.get("details") or {}).get("eventType") == "passed_ball"]
+    pa = rows[rows["at_bat_number"] == ab] if rows is not None else None
+    row = pa[pa["pitch_number"] == n] if pa is not None and n is not None else None
+    one = row is not None and len(row) == 1
+    g = (lambda c: row[c].iloc[0] if one and c in row else None)  # noqa: E731
+    sdesc, sev, sstr, sdes, spt = g("description"), g("events"), g("strikes"), g("des"), g("pitch_type")
+    mstr = (e.get("count") or {}).get("strikes")
+    cond = {"MLB: a pitch": e.get("type") == "pitch" and e.get("isPitch") is True,
+            "MLB: the event's explicit index equals its position and is unique in the play": explicit,
+            "MLB: a swing (call 'Swinging ...')": isinstance(call.get("description"), str)
+            and call["description"].startswith("Swinging "),
+            "MLB: a strike": d.get("isStrike") is True,
+            "MLB: strike three (the count reaches exactly three strikes)": _num_is(mstr, 3),
+            "MLB: the last kept event of the plate appearance": bool(kidx) and kidx[-1] == j,
+            "MLB: the plate appearance ends in a strikeout": res.get("eventType") == "strikeout",
+            "MLB: a passed ball on this pitch (a runner record's playIndex equals the event's index)":
+                explicit and pb_idx.count(idx) >= 1,
+            "MLB: 'Passed ball by catcher' in the play description": "Passed ball by catcher" in str(res.get("description")),
+            "Statcast: exactly one row at the key": one,
+            "Statcast: a swinging description (first token 'swinging')": isinstance(sdesc, str)
+            and sdesc.split("_")[0] == "swinging",
+            "Statcast: events strikeout": sev == "strikeout",
+            "Statcast: exactly two strikes before the pitch": _num_is(sstr, 2),
+            "Statcast: the last row of the plate appearance": one and int(pa["pitch_number"].max()) == n,
+            "Statcast: 'passed ball by catcher' in des": isinstance(sdes, str) and "passed ball by catcher" in sdes.lower()}
+    py = (lambda v: v.item() if hasattr(v, "item") else v)  # noqa: E731
+    ev = {"at_bat_number": ab, "pitch_number": n, "signature": list(event_signature(e)),
+          "mlb_event_index": idx, "list_position": j, "passed_ball_play_indices": pb_idx, "mlb_count_strikes": mstr,
+          "mlb_call": call.get("description"), "mlb_play": res.get("description"), "mlb_result": res.get("eventType"),
+          "statcast_description": py(sdesc), "statcast_events": py(sev), "statcast_strikes": py(sstr),
+          "statcast_pitch_type": py(spt), "statcast_des": py(sdes),
+          "failed": [k for k, v in cond.items() if not v]}
+    return not ev["failed"], ev
+
+
+def signature_key(sig) -> str:
+    return json.dumps(list(sig))
+
+
+def game_feed_evidence(g: int, vocab_dev: set) -> dict:
+    """An affected game's play-by-play as the approval saw it: the cache file's digest and each signature outside the
+    development vocabulary with its occurrence count."""
+    path = MLB_CACHE / "pbp" / f"{int(g)}.json"
+    pbp = json.loads(path.read_bytes())
+    voc = vocabulary(pbp)
+    return {"game_pk": int(g), "pbp_sha256": sha(path),
+            "signatures": {signature_key(k): int(v) for k, v in sorted(voc.items(), key=str) if k not in vocab_dev}}
+
+
+def exception_binding_problems(comp: dict, answers: dict) -> list:
+    """The rule's verified events must be exactly the approved evidence (Astra): the same games, each game's cached
+    play-by-play unchanged since the approval, and per game the same signatures with the same occurrence counts. A
+    now-missing original event, an extra one or a changed feed is a problem, never silently accepted."""
+    approved = {int(x["game_pk"]): x for x in (answers or {}).get("games") or []}
+    if not approved:
+        return ["the approval records no affected-game evidence"]
+    got = {}
+    for v in comp.get("verified_exceptions") or []:
+        c = got.setdefault(int(v["game_pk"]), {})
+        c[signature_key(v["signature"])] = c.get(signature_key(v["signature"]), 0) + 1
+    p = [] if set(got) == set(approved) else [f"verified games {sorted(got)} are not the approved {sorted(approved)}"]
+    for g, a in sorted(approved.items()):
+        path = MLB_CACHE / "pbp" / f"{g}.json"
+        if not path.exists() or sha(path) != a.get("pbp_sha256"):
+            p.append(f"game {g}: the cached play-by-play is missing or changed since the approval")
+        if got.get(g, {}) != a.get("signatures"):
+            p.append(f"game {g}: verified signatures {got.get(g, {})} are not the approved {a.get('signatures')}")
+    return p
+
+
+def feed_signature_problems(games: list, feed_stop: list) -> list:
+    """The approval's per-game evidence (signatures read from the current cached feed) against the blocked record's
+    feed_stop: the same games, and per game the same normalized set of signatures outside the vocabulary (Astra: a
+    feed changed after the block, e.g. Q to Q2, must not be approved). The blocked record lists signatures, not
+    occurrence counts; the counts and feed digests bind the approval to reconcile_reviewed and checks."""
+    want = {int(f["game_pk"]): sorted(signature_key(x) for x in f.get("signatures_outside_vocabulary") or [])
+            for f in feed_stop or []}
+    have = {int(g["game_pk"]): sorted(g.get("signatures") or {}) for g in games or []}
+    if not want:
+        return ["the blocked record lists no feed-stop game"]
+    p = [] if set(have) == set(want) else [f"approved games {sorted(have)} are not the blocked games {sorted(want)}"]
+    p += [f"game {g}: signatures {have.get(g)} are not the blocked record's {w}" for g, w in sorted(want.items())
+          if have.get(g) != w]
+    return p
+
+
+def feed_check(pbp: dict, rows, vocab_dev: set, rule: bool) -> dict:
+    """One game's feed-mapping stop (§8.1), with EXCEPTION_RULE when `rule`: a game with signatures outside the
+    development vocabulary clears only if every such event satisfies the rule and no kept no-pitch event is
+    unrecognized."""
+    new = sorted(set(vocabulary(pbp)) - vocab_dev, key=str)
+    unrec = sorted({event_signature(e) for p in pbp["allPlays"] for e in p["playEvents"] if unrecognized(e)}, key=str)
+    verified, failed = [], []
+    if rule and new and not unrec:
+        newset = set(new)
+        for p in pbp["allPlays"]:
+            for j, e in enumerate(p["playEvents"]):
+                if event_signature(e) in newset:
+                    ok, ev = exception_evidence(p, j, rows)
+                    (verified if ok else failed).append(ev)
+    stop = bool(unrec) or (bool(new) and (not rule or bool(failed) or not verified))
+    return {"new": new, "unrec": unrec, "verified": verified, "failed": failed, "stop": stop}
+
+
 def gate_vocabulary() -> set:
     """The development play-by-play vocabulary recorded by gate_v<MAPPING_VERSION> (§8.1)."""
     rec = load_record(f"gate_v{MAPPING_VERSION}")
@@ -2532,11 +2717,12 @@ def classify_completeness(s: dict) -> str:
     return "pass"
 
 
-def season_completeness(year: int, r: pd.DataFrame, vocab_dev: set) -> dict:
+def season_completeness(year: int, r: pd.DataFrame, vocab_dev: set, rule: bool = False) -> dict:
     """§5 / §8.1 on a target season: completed-game definition, score check (with the non-pitch explanation), key-level
     event coverage under the current mapping, and the feed-mapping stop: an event signature outside the gate record's
     development vocabulary, or a kept no-pitch event the development gate would flag as unrecognized (the same
-    classifier, Astra)."""
+    classifier, Astra). With `rule` (the user's EXCEPTION_RULE, revision 10d), new-signature events that the rule
+    verifies in both sources are listed under verified_exceptions instead of stopping."""
     sch = json.loads(fetch(SCHEDULE_URL.format(season=year), MLB_CACHE / "schedule" / f"{year}.json", valid_schedule))
     comp = completed_games(sch)
     games = completeness_games(comp)
@@ -2546,7 +2732,9 @@ def season_completeness(year: int, r: pd.DataFrame, vocab_dev: set) -> dict:
          int(r.duplicated(["game_pk", "at_bat_number", "pitch_number"]).sum()),
          "unexpected_statcast_games": sorted(int(g) for g in set(r["game_pk"]) - set(comp.index)),
          "unavailable": [], "feed_stop": [], "missing_games": [], "key_mismatch": [], "score_explained": [],
-         "score_unexplained": [], "new_signatures": {}}
+         "score_unexplained": [], "new_signatures": {},
+         "exception_rule": EXCEPTION_RULE["id"] if rule else None, "verified_exceptions": []}
+    rows_g = {int(g): x for g, x in r.groupby("game_pk")} if rule else {}
 
     def one(g):
         try:
@@ -2560,13 +2748,16 @@ def season_completeness(year: int, r: pd.DataFrame, vocab_dev: set) -> dict:
             if err:
                 s["unavailable"].append({"game_pk": g, "error": err})
                 continue
-            new = sorted(set(vocabulary(pbp)) - vocab_dev, key=str)
-            unrec = sorted({event_signature(e) for p in pbp["allPlays"] for e in p["playEvents"] if unrecognized(e)}, key=str)
-            if new or unrec:
+            fc = feed_check(pbp, rows_g.get(int(g)), vocab_dev, rule)
+            new, unrec = fc["new"], fc["unrec"]
+            for x in new:
+                s["new_signatures"][str(x)] = s["new_signatures"].get(str(x), 0) + 1
+            if fc["stop"]:
                 s["feed_stop"].append({"game_pk": g, "signatures_outside_vocabulary": [list(x) for x in new],
-                                       "unrecognized_kept_no_pitch": [list(x) for x in unrec]})
-                for x in new:
-                    s["new_signatures"][str(x)] = s["new_signatures"].get(str(x), 0) + 1
+                                       "unrecognized_kept_no_pitch": [list(x) for x in unrec],
+                                       **({"exception_rule_failed": fc["failed"]} if rule else {})})
+            else:
+                s["verified_exceptions"] += [{"game_pk": int(g), **v} for v in fc["verified"]]
             if g not in statcast:
                 continue
             kc = key_check(expected_keys(pbp), statcast[g])
@@ -2603,14 +2794,29 @@ def stage_checks(year: int):
         dev_p, dev_a = pd.read_parquet(ORIG["pitches"]), pd.read_parquet(ORIG["pas"])
         dom = load_record("domains")["result"]["domains"]
         res = {"label": season_info(year)["label"]}
-        res["B0"] = b0_inventory(raw_all, dom)
+        t = time.time()     # first: B0 accepts an out-of-domain description only at keys the rule verified here
+        rule = exception_rule_active(year)
+        res["completeness"] = season_completeness(year, r, gate_vocabulary(), rule=rule)
+        res["completeness"]["seconds"] = time.time() - t
+        vx = res["completeness"]["verified_exceptions"]
+        if rule:      # the same evidence the approval saw (Astra): a missing, extra or changed event stops
+            ap = load_record(f"exception_approval_{year}")["result"]["answers"]
+            res["exception_binding"] = exception_binding_problems(res["completeness"], ap)
+        bk = pitches.set_index(["game_pk", "at_bat_number", "pitch_number"])
+        for v in vx:          # the disclosure is read from the built row, not assumed (Astra)
+            k = (v["game_pk"], v["at_bat_number"], v["pitch_number"])
+            b = bk.loc[k] if k in bk.index else None
+            v["built"] = None if b is None else {
+                "pitch_type": None if pd.isna(b["pitch_type"]) else str(b["pitch_type"]),
+                "outcome": None if pd.isna(b["outcome"]) else str(b["outcome"]),
+                "is_pitchout": bool(b["is_pitchout"]), "outcome_fit_eligible": bool(b["outcome_fit_eligible"]),
+                "exclusion_reason": None if pd.isna(b["exclusion_reason"]) else str(b["exclusion_reason"])}
+        ek = {(v["game_pk"], v["at_bat_number"], v["pitch_number"]) for v in vx}
+        res["B0"] = b0_inventory(raw_all, dom, frozenset(ek))
         res["B0"]["new_pitch_types"] = sorted(set(res["B0"]["pitch_types"]) - set(map(str, dev_p["pitch_type"].dropna().unique())))
         res["B1"] = b1_counts(r, pitches)
         b2 = b2_table(pitches, year, dev_p, target_sample_label(year))
         res["prefit"] = prefit_checks(r, pitches, raw_all)
-        t = time.time()
-        res["completeness"] = season_completeness(year, r, gate_vocabulary())
-        res["completeness"]["seconds"] = time.time() - t
         tables = {"B2": b2["table"], **comparison_tables(year, target_sample_label(year), pitches, pas, dev_p, dev_a)}
         tpath = sd / "checks_tables.pkl"
         if tpath.exists():
@@ -2627,6 +2833,10 @@ def stage_checks(year: int):
             stops.append("pre-fit")
         if not res["completeness"]["ok"]:
             stops.append(f"completeness ({res['completeness']['outcome']})")
+        if res.get("exception_binding"):
+            stops.append("exception evidence differs from the approval")
+        if any(v.get("built") is None for v in vx):
+            stops.append("a verified exception has no built pitch row")
         res["stops"] = stops
         res["passed"] = not stops
         return res
@@ -3292,8 +3502,22 @@ def report_text(year: int, checks: dict, tables: dict, run: dict, full: dict) ->
                                f"{e['statcast'][0]}-{e['statcast'][1]}, non-pitch runs after the last pitch "
                                f"{e['nonpitch_runs_after_last_pitch']}" for e in c["score_explained"]) + ")"
              if c["score_explained"] else "") + ".",
+          *([f"- Feed-vocabulary exceptions accepted under the user's rule `{c.get('exception_rule')}` (approved "
+             f"{EXCEPTION_RULE['approved_on']}; {EXCEPTION_RULE['text']}): {len(c['verified_exceptions'])} event(s): "
+             + "; ".join(f"game {v['game_pk']}, plate appearance {v['at_bat_number']}, pitch {v['pitch_number']} "
+                         f"(MLB call {v['mlb_call']!r}, Statcast description {v['statcast_description']!r}, events "
+                         f"{v['statcast_events']!r}): {v['mlb_play']} Built row as the frozen code made it: "
+                         + (f"pitch type {(v.get('built') or {}).get('pitch_type')!r}, outcome "
+                            f"{(v.get('built') or {}).get('outcome') or 'none (the description has no mapping)'}, "
+                            f"pitchout flag {(v.get('built') or {}).get('is_pitchout')}, exclusion reason "
+                            f"{(v.get('built') or {}).get('exclusion_reason')!r}, outcome fit-eligible "
+                            f"{(v.get('built') or {}).get('outcome_fit_eligible')}" if v.get("built") else "not found")
+                         for v in c["verified_exceptions"])
+             + ". Each was verified in both sources and matches the approval's evidence; its row is kept unchanged."]
+            if c.get("verified_exceptions") else []),
           f"- B0: duplicate keys in the whole raw file {checks['B0']['duplicate_keys_whole_file']}; domain violations "
-          f"{checks['B0']['domain_violations'] or 'none'}; events accepted through the frozen code list only "
+          f"{checks['B0']['domain_violations'] or 'none'}; descriptions outside the domain accepted at rule-verified "
+          f"keys only {checks['B0'].get('description_exceptions') or 'none'}; events accepted through the frozen code list only "
           f"{checks['B0']['events_accepted_through_code_only'] or 'none'}; null counts {checks['B0']['nulls']}; "
           f"bb_type nulls {checks['B0']['bb_type_nulls']}.",
           f"- B1 (report): {checks['B1']}.", f"- B2: pitch types not seen in 2024-2025: {checks['B2_new_in_target'] or 'none'}.",
@@ -3427,7 +3651,90 @@ def raw_stage(year: int) -> str:
 
 
 def last_reconcile(year: int) -> str:
-    return f"reconcile2_{year}" if record_path(f"reconcile2_{year}").exists() else f"reconcile_{year}"
+    """The reconciliation publish follows: the reviewed one (the user's exception rule), else the one after the
+    refetch, else the first. The reviewed and refetch paths exclude each other (each refuses if the other exists)."""
+    for name in (f"reconcile_reviewed_{year}", f"reconcile2_{year}"):
+        if record_path(name).exists():
+            return name
+    return f"reconcile_{year}"
+
+
+def feed_block_problems(rec) -> list:
+    """Why a first reconciliation record is not a block the user's exception rule can answer (empty: it is one). It
+    must be finished and blocked for review by feed-vocabulary events alone: no unrecognized kept no-pitch event, no
+    other completeness finding (missing game, key mismatch, score, unavailable feed, duplicate or unexpected keys),
+    no integrity finding, no refetch day and no capped day."""
+    if not isinstance(rec, dict) or rec.get("status") != "finished":
+        return ["not a finished record"]
+    r = rec.get("result") or {}
+    c = r.get("completeness") or {}
+    p = [] if r.get("outcome") == "blocked for review" else [f"outcome {r.get('outcome')!r}"]
+    # positive proof that only the outcome failed (Astra): selftest, guard before and after, both freeze checks after
+    ra = rec.get("records_after")
+    if (rec.get("selftest") or {}).get("passed") is not True:
+        p.append("selftest not recorded as passed")
+    for k in ("guard_before", "guard_after"):
+        if (rec.get(k) or {}).get("ok") is not True:
+            p.append(f"{k} not recorded as ok")
+    if not isinstance(ra, dict) or set(ra) != {"freeze_c1_record.py", "freeze_forward_record.py"} or \
+            not all(isinstance(v, dict) and v.get("ok") is True for v in ra.values()):
+        p.append("the freeze checks after the run are not recorded as ok")
+    for k in ("error", "traceback", "post_guard_error", "post_records_error"):
+        if k in rec:
+            p.append(f"the record carries {k}")
+    if not c.get("feed_stop"):
+        p.append("no feed-vocabulary stop")
+    if any(f.get("unrecognized_kept_no_pitch") for f in c.get("feed_stop") or []):
+        p.append("an unrecognized kept no-pitch event")
+    for k in ("missing_games", "key_mismatch", "score_unexplained", "unavailable", "duplicate_statcast_keys",
+              "unexpected_statcast_games"):
+        if c.get(k):
+            p.append(f"completeness: {k}")
+    for k in ("integrity", "refetch_days", "days_at_row_cap"):
+        if r.get(k):
+            p.append(k)
+    if not r.get("snapshot") or not isinstance(r.get("snapshot_manifest"), dict):
+        p.append("no snapshot recorded")
+    return p
+
+
+def blocked_reconcile(year: int) -> tuple:
+    """(record, problems) for the season's first reconciliation as a block the exception rule can answer: bound like
+    any predecessor (stage, mode, identity, predecessors) except that it did not pass."""
+    rec, err = read_record(record_path(f"reconcile_{year}"))
+    if err:
+        return None, [err]
+    bad = [x for x in record_problems(f"reconcile_{year}", rec, identity()) if x != "not a finished, passed record"]
+    if rec.get("passed") is not False:
+        bad.append("the record passed")
+    return rec, bad + feed_block_problems(rec)
+
+
+def exception_rule_active(year: int) -> bool:
+    """EXCEPTION_RULE applies to a season only with a verified exception_approval record carrying this rule."""
+    rec, err = read_record(record_path(f"exception_approval_{year}"))
+    return not err and not record_problems(f"exception_approval_{year}", rec, identity()) and \
+        (rec.get("result") or {}).get("rule") == EXCEPTION_RULE and (rec.get("result") or {}).get("season") == year
+
+
+def block_resolved(year: int) -> list:
+    """Problems with reading the blocked first reconciliation as answered (empty: answered): the block qualifies, the
+    approval pins its digest and verifies, and reconcile_reviewed finished, passed and verifies."""
+    _, bad = blocked_reconcile(year)
+    ap, err = read_record(record_path(f"exception_approval_{year}"))
+    if err:
+        return bad + [f"exception_approval_{year}: {err}"]
+    if not exception_rule_active(year):
+        bad.append(f"exception_approval_{year} does not verify")
+    if ((ap.get("result") or {}).get("answers") or {}).get("sha256") != sha(record_path(f"reconcile_{year}")):
+        bad.append(f"exception_approval_{year} pins another reconcile_{year}")
+    rv, rerr = read_record(record_path(f"reconcile_reviewed_{year}"))
+    bad += [f"reconcile_reviewed_{year}: {x}" for x in ([rerr] if rerr else
+                                                         record_problems(f"reconcile_reviewed_{year}", rv, identity()))]
+    if not rerr and ((rv.get("result") or {}).get("answers") or {}).get("sha256") != \
+            sha(record_path(f"reconcile_{year}")):
+        bad.append(f"reconcile_reviewed_{year} pins another reconcile_{year}")
+    return bad
 
 
 def downloader():
@@ -3608,11 +3915,25 @@ def recoverable_days(window: dict, meta: dict, played: list, missing_or_incomple
     return {"capped": capped, "empty": empty, "outside": outside, "refetch": refetch}
 
 
-def reconcile_body(year: int, attempt: int) -> dict:
-    seeded = smoke_seed_cache(year) if SMOKE and attempt == 1 else None
-    snap, manifest = take_snapshot(year, attempt)
+def reconcile_body(year: int, attempt: int, reviewed=None, answers=None) -> dict:
+    """`reviewed`: the blocked first reconciliation's result (reconcile_reviewed, revision 10d). Then no new snapshot
+    is taken: the first one is verified against its recorded manifest and read again, with EXCEPTION_RULE; its rows,
+    rows by game type and key digest must equal the blocked record's, the verified events must be exactly the
+    approval's evidence (`answers`: games, feed digests, signature counts), and a recoverable problem goes to the user
+    (blocked for review), never to a refetch."""
+    if reviewed is None:
+        seeded = smoke_seed_cache(year) if SMOKE and attempt == 1 else None
+        snap, manifest = take_snapshot(year, attempt)
+    else:
+        seeded, snap, manifest = None, Path(reviewed["snapshot"]), reviewed["snapshot_manifest"]
+        changed = verify_snapshot(snap, manifest)
+        if changed:
+            return {"attempt": attempt, "reviewed": True, "snapshot": str(snap), "snapshot_manifest": manifest,
+                    "integrity": [f"the first reconciliation's snapshot changed: {changed[:10]}"],
+                    "outcome": "stop: data integrity", "passed": False}
     res = {"attempt": attempt, "acq_dir": str(ACQ_DIR), "smoke_seed": seeded, "snapshot": str(snap),
-           "snapshot_manifest": manifest}
+           "snapshot_manifest": manifest, "reviewed": reviewed is not None,
+           "exception_rule": EXCEPTION_RULE if reviewed is not None else None}
     sch_bytes = fetch(SCHEDULE_URL.format(season=year), MLB_CACHE / "schedule" / f"{year}.json", valid_schedule)
     sch = json.loads(sch_bytes)
     gdates = game_dates(sch)
@@ -3640,6 +3961,8 @@ def reconcile_body(year: int, attempt: int) -> dict:
         res.update(recoverable=rv, refetch_days=rv["refetch"], outcome="stop: days not fetched" if
                    info.get("days_not_fetched") else ("refetch required" if attempt == 1 and rv["refetch"] else
                                                       "stop: no regular-season rows"))
+        if reviewed is not None:     # the blocked record had rows from this very snapshot
+            res["outcome"] = "stop: data integrity"
         res["passed"] = res["outcome"] == "refetch required"
         if res["passed"]:
             res["refetch_command"] = refetch_command(year, window, rv["refetch"])
@@ -3648,7 +3971,7 @@ def reconcile_body(year: int, attempt: int) -> dict:
     res["rows_by_game_type"] = {str(k): int(v) for k, v in proj["game_type"].value_counts().items()}
     r = proj[(proj["game_type"] == "R") & (proj["game_year"] == year)].reset_index(drop=True)
     r = smoke_subset(r)
-    comp_s = season_completeness(year, r, gate_vocabulary())
+    comp_s = season_completeness(year, r, gate_vocabulary(), rule=reviewed is not None)
     fed = {int(f["game_pk"]) for f in comp_s["feed_stop"]}
     gone = comp_s["missing_games"] + [m["game_pk"] for m in comp_s["key_mismatch"] if m["n_missing"] > 0]
     mi_dates = sorted({d for g in gone if int(g) not in fed for d in gdates.get(int(g), ())})
@@ -3662,7 +3985,22 @@ def reconcile_body(year: int, attempt: int) -> dict:
                                    not step1_ok),
                                   ("the step-1 and gate schedules disagree on completed games or scores",
                                    any(diff.values()))) if bad]
+    if reviewed is not None:
+        same = {"regular_season_rows": int(len(r)) == reviewed.get("regular_season_rows"),
+                "rows_by_game_type": res["rows_by_game_type"] == reviewed.get("rows_by_game_type"),
+                "published_key_digest": res["published_key_digest"] == reviewed.get("published_key_digest"),
+                "the approved feed-stop games are the blocked record's":
+                    sorted(int(x["game_pk"]) for x in (answers or {}).get("games") or []) ==
+                    sorted(int(f["game_pk"]) for f in reviewed["completeness"]["feed_stop"])}
+        res["same_as_blocked_record"] = same
+        integrity += [f"{k} differs from the blocked record's" for k, ok in same.items() if not ok]
+        res["exception_binding"] = feed_signature_problems((answers or {}).get("games"),
+                                                           reviewed["completeness"]["feed_stop"]) + \
+            exception_binding_problems(comp_s, answers)
+        integrity += [f"exception evidence: {x}" for x in res["exception_binding"]]
     outcome = acquisition_outcome(attempt, integrity, rv["refetch"], comp_s, rv["capped"])
+    if reviewed is not None and outcome == "refetch required":
+        outcome = "blocked for review"       # no refetch on the reviewed path: the user decides
     res.update(completeness=comp_s, regular_season_rows=int(len(r)), recoverable=rv, days_at_row_cap=rv["capped"],
                empty_days_with_completed_games=rv["empty"], schedule_dates_outside_window=rv["outside"],
                refetch_days=rv["refetch"], integrity=integrity, outcome=outcome,
@@ -3712,6 +4050,167 @@ def stage_reconcile2(year: int):
                           "files_after": {d: sha(cache / f"{d}.csv") for d in days}}
         return res
     run_season_stage(year, "reconcile2", body)
+
+
+def dev_feed_replay(vocab: set) -> dict:
+    """§8.2 step 5 for the changed acceptance policy (Astra): feed_check with the rule off and on over every cached
+    completed development game (the gate's games and cache; the smoke subset in smoke), with the development rows.
+    Passes only if each season covers the gate's checked games, all replayed, with no classification difference, no
+    stop and no verified event (replay_ok)."""
+    raw = pd.read_parquet(ORIG["raw"], columns=["game_pk", "game_type", "at_bat_number", "pitch_number", "description",
+                                                "events", "strikes", "des", "pitch_type"])
+    rows_g = {int(g): x for g, x in raw[raw["game_type"] == "R"].groupby("game_pk")}
+    gate = load_record(f"gate_v{MAPPING_VERSION}")["result"]["seasons"]
+    out, ok = {}, True
+    for season in DEV_SEASONS:
+        sch = json.loads(fetch(SCHEDULE_URL.format(season=season), MLB_CACHE / "schedule" / f"{season}.json",
+                               valid_schedule))
+        games = completeness_games(completed_games(sch))
+        diff, unavailable, stops, verified = [], [], 0, 0
+        for g in games:
+            try:
+                pbp = json.loads((MLB_CACHE / "pbp" / f"{int(g)}.json").read_bytes())
+            except (OSError, ValueError):
+                unavailable.append(int(g))
+                continue
+            rg = rows_g.get(int(g))
+            off, on = feed_check(pbp, rg, vocab, False), feed_check(pbp, rg, vocab, True)
+            if off["stop"] != on["stop"] or on["verified"]:
+                diff.append(int(g))
+            stops += bool(on["stop"])
+            verified += len(on["verified"])
+        want = (gate.get(str(season)) or {}).get("checked")
+        out[str(season)] = {"games": len(games), "gate_checked": want, "replayed": len(games) - len(unavailable),
+                            "not_cached": unavailable[:20], "n_not_cached": len(unavailable),
+                            "classification_differences": diff, "stops_rule_on": stops, "verified_rule_on": verified}
+        ok &= replay_ok(out[str(season)])
+    return {"seasons": out, "ok": bool(ok)}
+
+
+def replay_ok(r: dict) -> bool:
+    """One development season's replay passes only if it covers exactly the frozen gate's checked games (the smoke
+    subset in smoke), every one replayed, with no classification difference, no stop and no verified event (Astra)."""
+    return isinstance(r.get("gate_checked"), int) and r["games"] == r["gate_checked"] == r["replayed"] \
+        and not r["n_not_cached"] and not r["classification_differences"] and r["stops_rule_on"] == 0 \
+        and r["verified_rule_on"] == 0
+
+
+def target_fixtures(year: int, blocked: dict, vocab: set) -> dict:
+    """The rule on the blocked games' real evidence (the blocked record's snapshot, verified first; the cached
+    play-by-play): every event outside the vocabulary must verify, and conflicting variants of the first must fail
+    (Astra): the preceding pitch claims the event's index, Statcast description 'not_swinging', strikes 2.5, the
+    passed-ball record removed, the play's result changed, des without the passed ball."""
+    import copy
+    snap = Path(blocked["snapshot"])
+    changed = verify_snapshot(snap, blocked["snapshot_manifest"])
+    if changed:
+        return {"ok": False, "stopped": f"the blocked record's snapshot changed: {changed[:10]}"}
+    _, proj, _ = cache_rows(year, snap)
+    games = [int(f["game_pk"]) for f in blocked["completeness"]["feed_stop"]]
+    rows_g = {int(g): x for g, x in proj[proj["game_pk"].isin(games)].groupby("game_pk")}
+    positives, negatives, first = [], [], None
+    for g in games:
+        pbp = json.loads((MLB_CACHE / "pbp" / f"{g}.json").read_bytes())
+        for p in pbp["allPlays"]:
+            for j, e in enumerate(p["playEvents"]):
+                if event_signature(e) not in vocab:
+                    ok, ev = exception_evidence(p, j, rows_g.get(g))
+                    positives.append({"game_pk": g, "ok": ok, **ev})
+                    first = first or (g, p, j)
+    if first is not None:
+        g, p0, j = first
+        r0 = rows_g.get(g)
+        ab = int(p0["about"]["atBatIndex"]) + 1
+
+        def shift(p):     # Astra's conflict: the preceding event claims the index, the pitch gets the next one
+            p["playEvents"][j - 1]["index"], p["playEvents"][j]["index"] = j, j + 1
+
+        def statcast(col, val):
+            def f(r):
+                n = r.loc[r["at_bat_number"] == ab, "pitch_number"].max()
+                r.loc[(r["at_bat_number"] == ab) & (r["pitch_number"] == n), col] = val
+            return f
+        variants = {"the preceding pitch claims the event's index": (shift, None),
+                    "Statcast description 'not_swinging'": (None, statcast("description", "not_swinging")),
+                    "Statcast strikes 2.5": (None, statcast("strikes", 2.5)),
+                    "no passed-ball runner record": (lambda p: p.__setitem__("runners", [
+                        x for x in p["runners"] if (x.get("details") or {}).get("eventType") != "passed_ball"]), None),
+                    "the play's result is not a strikeout": (lambda p: p["result"].update(eventType="walk"), None),
+                    "des without the passed ball": (None, statcast("des", "called out on a swinging pitchout."))}
+        for name, (mp, mr) in variants.items():
+            p_ = copy.deepcopy(p0)
+            r_ = r0.astype({"strikes": "float64"}) if r0 is not None else None
+            if mp:
+                mp(p_)
+            if mr and r_ is not None:
+                mr(r_)
+            ok, ev = exception_evidence(p_, j, r_)
+            negatives.append({"variant": name, "verified": ok, "failed": ev["failed"]})
+    return {"positives": positives, "negatives": negatives,
+            "ok": bool(positives) and all(x["ok"] for x in positives) and len(negatives) == 6
+            and not any(x["verified"] for x in negatives)}
+
+
+def stage_approve_exception(year: int, date: str):
+    """2026 only, and only on the user's explicit instruction: records the user's approval of EXCEPTION_RULE as the
+    answer to a first reconciliation blocked for review by feed-vocabulary events alone, pinning that record's digest.
+    It approves the rule, not a list: reconcile_reviewed and checks verify every event again."""
+    if not acquired(year):
+        raise SystemExit(f"refused: the exception approval answers 2026's acquisition (§8.2); {year} is extracted")
+    if not valid_authorization_date(date):
+        raise SystemExit(f"refused: approval date must be YYYY-MM-DD between {PROTOCOL_LOCKED_ON} and today")
+    if record_path(f"reconcile2_{year}").exists():
+        raise SystemExit(f"refused: reconcile2_{year} exists (the refetch path)")
+    first, bad = blocked_reconcile(year)
+    if bad:
+        raise SystemExit(f"refused: reconcile_{year} is not a block the exception rule can answer: {bad}")
+    h = sha(record_path(f"reconcile_{year}"))
+
+    def body():
+        c = first["result"]["completeness"]
+        vocab = gate_vocabulary()
+        games = [game_feed_evidence(int(f["game_pk"]), vocab) for f in c["feed_stop"]]
+        replay = dev_feed_replay(vocab)
+        fixtures = target_fixtures(year, first["result"], vocab)
+        checks = [{"check": "development replay: rule off and on classify every cached completed game alike, and the "
+                            "rule verifies nothing on development data", "ok": replay["ok"]},
+                  {"check": "target fixtures: every event outside the vocabulary in the blocked games verifies; each "
+                            "conflicting variant of the first fails", "ok": fixtures["ok"]},
+                  {"check": "every affected game has signatures outside the vocabulary",
+                   "ok": all(gm["signatures"] for gm in games)},
+                  {"check": "each affected game's signatures in the current feed are the blocked record's (Astra)",
+                   "ok": not feed_signature_problems(games, c["feed_stop"]),
+                   "detail": feed_signature_problems(games, c["feed_stop"])}]
+        return {"passed": all(x["ok"] for x in checks), "season": year, "rule": EXCEPTION_RULE, "authorized_on": date,
+                "answers": {"record": f"reconcile_{year}", "sha256": h, "outcome": first["result"]["outcome"],
+                            "feed_stop": c["feed_stop"], "new_signatures": c.get("new_signatures"), "games": games},
+                "development_replay": replay, "target_fixtures": fixtures, "checks": checks,
+                "note": "recorded on the user's explicit instruction; the rule is approved, not a list of events"}
+    run_stage(f"exception_approval_{year}", body, needs=("guard", f"authorize_{year}"))
+
+
+def stage_reconcile_reviewed(year: int):
+    """After the user's exception approval: the first reconciliation's snapshot read again with EXCEPTION_RULE."""
+    if not acquired(year):
+        raise SystemExit(f"refused: reconcile_reviewed is 2026's acquisition step (§8.2); {year} is extracted")
+    season_gate(year, "reconcile_reviewed")
+    if record_path(f"reconcile2_{year}").exists():
+        raise SystemExit(f"refused: reconcile2_{year} exists (the refetch path)")
+    first, bad = blocked_reconcile(year)
+    if bad:
+        raise SystemExit(f"refused: reconcile_{year} is not a block the exception rule can answer: {bad}")
+    ap, err = read_record(record_path(f"exception_approval_{year}"))
+    if err or not exception_rule_active(year) or \
+            ((ap.get("result") or {}).get("answers") or {}).get("sha256") != sha(record_path(f"reconcile_{year}")):
+        raise SystemExit(f"refused: no verified exception approval pinning reconcile_{year} ({err or 'see record'}); "
+                         f"it is written only on the user's instruction: s9_seasons.py approve-exception {year} <date>")
+
+    def body():
+        res = reconcile_body(year, 1, reviewed=first["result"], answers=ap["result"]["answers"])
+        res["answers"] = {"record": f"reconcile_{year}", "sha256": sha(record_path(f"reconcile_{year}")),
+                          "games": ap["result"]["answers"]["games"]}
+        return res
+    run_season_stage(year, "reconcile_reviewed", body)
 
 
 def stage_publish(year: int):
@@ -4105,7 +4604,7 @@ def flagged_catchers(scores: pd.DataFrame, pitches_path: Path, year: int) -> pd.
 SEASON_STAGE_FUNCS = {"extract": stage_extract, "build": stage_build, "checks": stage_checks, "run": stage_run,
                       "halves": stage_halves, "validate": stage_validate, "report": stage_report,
                       "prefetch": stage_prefetch, "reconcile": stage_reconcile, "reconcile2": stage_reconcile2,
-                      "publish": stage_publish, "forward": stage_forward}
+                      "reconcile_reviewed": stage_reconcile_reviewed, "publish": stage_publish, "forward": stage_forward}
 CONTEXTS.update({"season_run": ctx_season_run, "season_halves": ctx_season_halves,
                  "season_validate": ctx_season_validate, "season_forward": ctx_season_forward})
 
@@ -4542,6 +5041,208 @@ def selftest_phase3() -> list:
          and acquisition_outcome(2, [], [], {**ok, "unexpected_statcast_games": [9]}, []) == "stop: data integrity"
          and acquisition_outcome(1, [], ["2026-04-01"], {**ok, "feed_stop": [{"game_pk": 5}],
                                                          "missing_games": [6]}, []) == "blocked for review")
+    # EXCEPTION_RULE (revision 10d): a play modeled on 824606's (a swinging pitchout for strike three, passed ball)
+    import copy
+
+    def pitch(code, call, k, i, strike=True, out=False):
+        return {"type": "pitch", "isPitch": True, "index": i, "count": {"strikes": k},
+                "details": {"code": code, "call": {"code": code, "description": call}, "isStrike": strike, "isOut": out}}
+    xplay = {"about": {"atBatIndex": 13},
+             "playEvents": [{"type": "pickoff", "isPitch": False, "index": 0, "details": {"code": "1"}},
+                            pitch("B", "Ball", 0, 1, strike=False), pitch("S", "Swinging Strike", 1, 2),
+                            pitch("F", "Foul", 2, 3), pitch("Q", "Swinging Pitchout", 3, 4, out=True)],
+             "result": {"eventType": "strikeout", "description": "X called out on a swinging pitchout. Y to 2nd. Passed "
+                                                                "ball by catcher Z."},
+             "runners": [{"details": {"eventType": "strikeout", "playIndex": 4}},
+                         {"details": {"eventType": "passed_ball", "playIndex": 4}}]}
+    xrows = pd.DataFrame({"game_pk": 5, "at_bat_number": 14, "pitch_number": [1, 2, 3, 4],
+                          "description": ["ball", "swinging_strike", "foul", "swinging_pitchout"],
+                          "events": [None, None, None, "strikeout"], "strikes": [0, 0, 1, 2],
+                          "des": [None, None, None, "X called out on a swinging pitchout. Y to 2nd. Passed ball by "
+                                                  "catcher Z."]})
+    xpbp = {"allPlays": [xplay]}
+    xvocab = set(vocabulary(xpbp)) - {event_signature(xplay["playEvents"][4])}
+    okx, evx = exception_evidence(xplay, 4, xrows)
+    case("rev 10d rule: the 824606 pattern verifies in both sources (key: plate appearance 14, pitch 4)",
+         okx and evx["at_bat_number"] == 14 and evx["pitch_number"] == 4)
+
+    def fails(mut_play=None, mut_rows=None):
+        p_, r_ = copy.deepcopy(xplay), xrows.copy()
+        if mut_play:
+            mut_play(p_)
+        if mut_rows:
+            mut_rows(r_)
+        return not exception_evidence(p_, 4, r_)[0]
+    case("rev 10d rule: each condition is required (no passed ball; passed ball on another pitch; called, not "
+         "swinging; not strike three; not a strikeout; no 'Passed ball by catcher'; Statcast events, strikes, "
+         "description, des; a duplicate or missing Statcast row; not the last pitch)",
+         fails(lambda p: p["runners"].pop(1))
+         and fails(lambda p: p["runners"][1]["details"].update(playIndex=3))
+         and fails(lambda p: p["playEvents"][4]["details"]["call"].update(description="Called Strike"))
+         and fails(lambda p: p["playEvents"][4]["count"].update(strikes=2))
+         and fails(lambda p: p["result"].update(eventType="strikeout_double_play"))
+         and fails(lambda p: p["result"].update(description="X called out on a swinging pitchout."))
+         and fails(mut_rows=lambda r: r.__setitem__("events", [None, None, None, "field_out"]))
+         and fails(mut_rows=lambda r: r.__setitem__("strikes", [0, 0, 1, 1]))
+         and fails(mut_rows=lambda r: r.__setitem__("description", ["ball", "swinging_strike", "foul", "pitchout"]))
+         and fails(mut_rows=lambda r: r.__setitem__("des", [None] * 4))
+         and not exception_evidence(xplay, 4, pd.concat([xrows, xrows.iloc[[3]]]))[0]
+         and not exception_evidence(xplay, 4, xrows.iloc[:3])[0]
+         and not exception_evidence(xplay, 4, None)[0]
+         and fails(lambda p: p["playEvents"].append(pitch("B", "Ball", 3, 5, strike=False))))
+
+    def shift(p):
+        p["playEvents"][3]["index"], p["playEvents"][4]["index"] = 4, 5
+    case("rev 10d (Astra): conflicting evidence fails closed: the preceding pitch claims the index (passed ball still "
+         "at 4); no explicit index; a duplicated index; Statcast 'not_swinging'; strikes 2.5 or '2'; MLB strikes 3.5; "
+         "the evidence keeps both indices and the values read",
+         fails(shift) and fails(lambda p: p["playEvents"][4].pop("index"))
+         and fails(lambda p: p["playEvents"][3].update(index=4))
+         and fails(mut_rows=lambda r: r.__setitem__("description", ["ball", "swinging_strike", "foul", "not_swinging"]))
+         and fails(mut_rows=lambda r: r.__setitem__("strikes", [0.0, 0.0, 1.0, 2.5]))
+         and fails(mut_rows=lambda r: r.__setitem__("strikes", ["0", "0", "1", "2"]))
+         and fails(lambda p: p["playEvents"][4]["count"].update(strikes=3.5))
+         and evx["mlb_event_index"] == 4 and evx["list_position"] == 4 and evx["passed_ball_play_indices"] == [4]
+         and evx["statcast_strikes"] == 2 and evx["statcast_description"] == "swinging_pitchout"
+         and not exception_evidence(xplay, 4, xrows.assign(strikes=[0.0, 0.0, 1.0, 2.0]))[1]["failed"])
+    fc_off, fc_on = feed_check(xpbp, xrows, xvocab, False), feed_check(xpbp, xrows, xvocab, True)
+    bad_pbp = copy.deepcopy(xpbp)
+    bad_pbp["allPlays"].append({"about": {"atBatIndex": 14}, "playEvents": [pitch("Q", "Swinging Pitchout", 1, 0)],
+                                "result": {"eventType": "single", "description": ""}, "runners": []})
+    unrec_pbp = copy.deepcopy(xpbp)
+    unrec_pbp["allPlays"][0]["playEvents"].insert(0, {"type": "no_pitch", "isPitch": False,
+                                                      "details": {"code": "VZ", "call": {"code": "VZ"},
+                                                                  "description": "Something new"}})
+    case("rev 10d feed_check: without the rule a new signature stops; with it a verified event clears, any failed "
+         "event of the same signature stops the game, an unrecognized kept no-pitch event stops, an in-vocabulary "
+         "game is untouched",
+         fc_off["stop"] and not fc_on["stop"] and len(fc_on["verified"]) == 1
+         and feed_check(bad_pbp, xrows, xvocab, True)["stop"]
+         and feed_check(unrec_pbp, xrows, xvocab | {event_signature(unrec_pbp["allPlays"][0]["playEvents"][0])},
+                        True)["stop"]
+         and not feed_check(xpbp, xrows, set(vocabulary(xpbp)), True)["stop"])
+    blocked = {"status": "finished", "passed": False, "selftest": {"passed": True}, "guard_before": {"ok": True},
+               "guard_after": {"ok": True}, "records_after": {"freeze_c1_record.py": {"ok": True},
+                                                              "freeze_forward_record.py": {"ok": True}}, "result": {
+        "outcome": "blocked for review", "integrity": [], "refetch_days": [], "days_at_row_cap": [],
+        "snapshot": "/x", "snapshot_manifest": {"a": "b"},
+        "completeness": {**ok, "feed_stop": [{"game_pk": 5, "signatures_outside_vocabulary": [["pitch"]],
+                                              "unrecognized_kept_no_pitch": []}]}}}
+
+    def fb(**kw):
+        b = copy.deepcopy(blocked)
+        for k, v in kw.items():
+            (b["result"]["completeness"] if k in ok else b["result"])[k] = v
+        return feed_block_problems(b)
+    case("rev 10d: only a block by feed-vocabulary events alone can be answered by the rule (not a missing game, key "
+         "mismatch, score, unavailable feed, unrecognized no-pitch, integrity, refetch or capped day, other outcome)",
+         fb() == [] and fb(missing_games=[6]) and fb(key_mismatch=[{"n_missing": 1}]) and fb(score_unexplained=[1])
+         and fb(unavailable=[1]) and fb(integrity=["x"]) and fb(refetch_days=["2026-04-01"])
+         and fb(days_at_row_cap=["2026-04-01"]) and fb(outcome="pass") and fb(feed_stop=[])
+         and fb(feed_stop=[{"game_pk": 5, "unrecognized_kept_no_pitch": [["no_pitch"]]}])
+         and feed_block_problems({**blocked, "status": "reserved"}))
+    case("rev 10d (Astra): the block needs positive proof that only the outcome failed (selftest, guard before and "
+         "after, both freeze checks after, no error)",
+         feed_block_problems({**blocked, "guard_after": {"ok": False}})
+         and feed_block_problems({**blocked, "guard_before": {}})
+         and feed_block_problems({**blocked, "records_after": {"freeze_c1_record.py": {"ok": True}}})
+         and feed_block_problems({**blocked, "records_after": {"freeze_c1_record.py": {"ok": True},
+                                                               "freeze_forward_record.py": {"ok": False}}})
+         and feed_block_problems({**blocked, "error": "ValueError: x"})
+         and feed_block_problems({**blocked, "post_records_error": "x"})
+         and feed_block_problems({**blocked, "selftest": {"passed": False}}))
+    import tempfile
+    global MLB_CACHE, RECORDS
+    keep = (MLB_CACHE, RECORDS)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            MLB_CACHE = RECORDS = Path(td)
+            (Path(td) / "pbp").mkdir()
+            pf = Path(td) / "pbp" / "5.json"
+            pf.write_text(json.dumps(xpbp))
+            gev = game_feed_evidence(5, xvocab)
+            comp_ok = {"verified_exceptions": [{"game_pk": 5, **evx}]}
+            bind_ok = exception_binding_problems(comp_ok, {"games": [gev]})
+            bind_missing = exception_binding_problems({"verified_exceptions": []}, {"games": [gev]})
+            bind_extra = exception_binding_problems({"verified_exceptions": comp_ok["verified_exceptions"] * 2},
+                                                    {"games": [gev]})
+            bind_other = exception_binding_problems({"verified_exceptions": [{**comp_ok["verified_exceptions"][0],
+                                                                              "game_pk": 6}]}, {"games": [gev]})
+            bind_none = exception_binding_problems(comp_ok, {})
+            # Astra's Q -> Q2 regression: the feed changed after the block, baseball evidence intact
+            q2 = copy.deepcopy(xpbp)
+            q2["allPlays"][0]["playEvents"][4]["details"]["code"] = "Q2"
+            q2["allPlays"][0]["playEvents"][4]["details"]["call"]["code"] = "Q2"
+            (Path(td) / "pbp" / "7.json").write_text(json.dumps(q2))
+            stop_q = [{"game_pk": 7, "signatures_outside_vocabulary": [list(event_signature(
+                xplay["playEvents"][4]))], "unrecognized_kept_no_pitch": []}]
+            q2_vocab = set(vocabulary(q2)) - {event_signature(q2["allPlays"][0]["playEvents"][4])}
+            gev_q2 = game_feed_evidence(7, q2_vocab)
+            sig_q2 = feed_signature_problems([gev_q2], stop_q)
+            sig_q = feed_signature_problems([{**gev_q2, "signatures": {signature_key(event_signature(
+                xplay["playEvents"][4])): 1}}], stop_q)
+            sig_other = feed_signature_problems([{**gev, "game_pk": 8}], stop_q)
+            sig_none = feed_signature_problems([gev_q2], [])
+            q2_rule_ok = exception_evidence(q2["allPlays"][0], 4, xrows)[0]
+            pf.write_text(json.dumps(xpbp) + " ")
+            bind_changed = exception_binding_problems(comp_ok, {"games": [gev]})
+            # the answer link (a pinned failed record): checked by chain_problems and record_problems
+            rp = lambda n: Path(td) / f"s9_{n}.json"  # noqa: E731
+            rp("reconcile_2026").write_text(json.dumps(blocked))
+            ans = {"record": "reconcile_2026", "sha256": sha(rp("reconcile_2026"))}
+            rp("exception_approval_2026").write_text(json.dumps({"stage": "exception_approval_2026",
+                                                                 "predecessors": {}, "result": {"answers": ans}}))
+            chain_ok = chain_problems("exception_approval_2026", rp)
+            ans_ok = answer_problems("exception_approval_2026", {"result": {"answers": ans}})
+            ans_other = answer_problems("exception_approval_2026", {"result": {"answers": {**ans, "sha256": "0"}}})
+            ans_unnamed = answer_problems("reconcile_reviewed_2026", {"result": {}})
+            rp("reconcile_2026").unlink()
+            chain_gone = chain_problems("exception_approval_2026", rp)
+            ans_gone = answer_problems("exception_approval_2026", {"result": {"answers": ans}})
+    finally:
+        MLB_CACHE, RECORDS = keep
+    case("rev 10d (Astra): verified events must be exactly the approval's evidence: same games, unchanged cached feed, "
+         "same signature counts (a missing, extra, other-game or changed-feed event is a problem; no evidence fails)",
+         bind_ok == [] and gev["signatures"] == {signature_key(event_signature(xplay["playEvents"][4])): 1}
+         and bind_missing and bind_extra and bind_other and bind_none and bind_changed)
+    case("rev 10d (Astra, Q->Q2): the approval's per-game signatures from the current feed must be the blocked "
+         "record's: a feed changed to Q2 with the baseball evidence intact is refused although the rule verifies it; "
+         "the same signature passes; another game or no blocked game is refused",
+         q2_rule_ok and gev_q2["signatures"] == {signature_key(event_signature(q2["allPlays"][0]["playEvents"][4])): 1}
+         and sig_q2 and sig_q == [] and sig_other and sig_none)
+    rclean = {"games": 1, "gate_checked": 1, "replayed": 1, "n_not_cached": 0, "classification_differences": [],
+              "stops_rule_on": 0, "verified_rule_on": 0}
+    case("rev 10d (Astra): the development replay passes only with zero stops (equal stops off and on included), the "
+         "gate's checked-game count, every game replayed, no difference and nothing verified",
+         replay_ok(rclean) and not replay_ok({**rclean, "stops_rule_on": 1})
+         and not replay_ok({**rclean, "gate_checked": 2}) and not replay_ok({**rclean, "gate_checked": None})
+         and not replay_ok({**rclean, "replayed": 0, "n_not_cached": 1})
+         and not replay_ok({**rclean, "classification_differences": [5]}) and not replay_ok({**rclean, "verified_rule_on": 1}))
+    case("rev 10d (Astra): the answered failed record is a required digest link: chain_problems and answer_problems "
+         "flag it missing or at another digest; only the answer stages carry it",
+         chain_ok == [] and chain_gone and ans_gone and ans_other and ans_unnamed
+         and not any("is missing or not at the pinned digest" in x for x in ans_ok)
+         and any("is missing or not at the pinned digest" in x for x in ans_gone + ans_other)
+         and answer_problems("publish_2026", {"result": {}}) == [])
+    braw = pd.DataFrame({"game_type": "R", "game_pk": [5, 5, 6], "at_bat_number": [14, 14, 1], "pitch_number": [3, 4, 1],
+                         "description": ["foul", "swinging_pitchout", "ball"], "events": [None, "strikeout", None],
+                         "bb_type": None, "stand": "R", "p_throws": "R", "inning_topbot": "Top", "pitch_type": "FF"})
+    bdom = {"description": ["ball", "foul"], "bb_type": list(batter.BB_TYPES), "stand": ["L", "R"],
+            "p_throws": ["L", "R"], "inning_topbot": ["Top", "Bot"], "events_dev": ["strikeout"], "events_code": []}
+    b_no, b_yes = b0_inventory(braw, bdom), b0_inventory(braw, bdom, frozenset({(5, 14, 4)}))
+    b_other = b0_inventory(braw.assign(description=["foul", "swinging_pitchout", "swinging_pitchout"]), bdom,
+                           frozenset({(5, 14, 4)}))
+    case("rev 10d B0: an out-of-domain description stops unless at a rule-verified key, where it is listed; the same "
+         "label at any other key still stops",
+         not b_no["ok"] and b_yes["ok"] and b_yes["description_exceptions"] ==
+         [{"game_pk": 5, "at_bat_number": 14, "pitch_number": 4, "description": "swinging_pitchout"}]
+         and not b_other["ok"] and b_other["domain_violations"] == {"description": {"swinging_pitchout": 1}})
+    case("rev 10d: the reviewed and approval stages chain to the exception approval; publish follows the last "
+         "reconciliation",
+         expected_predecessors("reconcile_reviewed_2026") == {"guard", "audit", "control", f"gate_v{MAPPING_VERSION}",
+                                                              "domains", "authorize_2026", "exception_approval_2026"}
+         and expected_predecessors("exception_approval_2026") == {"guard", "authorize_2026"}
+         and "reconcile_reviewed" in SEASON_STAGE_FUNCS)
     fin, pst = {"detailedState": "Final"}, {"detailedState": "Postponed"}
     sch = {"dates": [{"date": "2026-04-01", "games": [{"gamePk": 7, "status": fin}, {"gamePk": 8, "status": fin}]},
                      {"date": "2026-04-02", "games": [{"gamePk": 7, "status": fin}, {"gamePk": 9, "status": pst}]},
@@ -4907,6 +5608,15 @@ def stage_recheck():
             bad = [err]
         else:
             bad = record_problems(stage, r, ident) if r.get("status") == "finished" else [f"status {r.get('status')}"]
+            y = stage.removeprefix("reconcile_")
+            if bad and y.isdigit() and r.get("status") == "finished" and r.get("passed") is False \
+                    and record_path(f"reconcile_reviewed_{y}").exists():
+                left = block_resolved(int(y))      # the block the user answered (EXCEPTION_RULE): not a problem
+                if not left:
+                    print(f"{p.name}: status=finished passed=False blocked for review; answered by "
+                          f"exception_approval_{y} and reconcile_reviewed_{y}")
+                    continue
+                bad = bad + [f"block not answered: {left}"]
         print(f"{p.name}: status={r.get('status') if r else '?'} passed={r.get('passed') if r else '?'} "
               f"{'ok' if not bad else 'PROBLEMS ' + str(bad)}")
         problems += [f"{p.name}: {x}" for x in bad]
@@ -4935,9 +5645,13 @@ if __name__ == "__main__":
         stage_authorize(int(sys.argv[2]), sys.argv[3])
     elif len(sys.argv) == 4 and sys.argv[1] == "authorize-run" and sys.argv[2].isdigit():
         stage_authorize_run(int(sys.argv[2]), sys.argv[3])
+    elif len(sys.argv) == 4 and sys.argv[1] == "approve-exception" and sys.argv[2].isdigit():
+        stage_approve_exception(int(sys.argv[2]), sys.argv[3])
     else:
         sys.exit(f"usage: python3.12 s9_seasons.py {{{'|'.join(STAGES)}}}\n"
                  f"       python3.12 s9_seasons.py {{{'|'.join(SEASON_STAGE_FUNCS)}}} <year>\n"
                  f"       python3.12 s9_seasons.py authorize <year> <YYYY-MM-DD>   (only on the user's instruction)\n"
                  f"       python3.12 s9_seasons.py authorize-run 2026 <YYYY-MM-DD>   (Stage C; only on the user's "
-                 f"instruction)")
+                 f"instruction)\n"
+                 f"       python3.12 s9_seasons.py approve-exception 2026 <YYYY-MM-DD>   (EXCEPTION_RULE; only on the "
+                 f"user's instruction)")
